@@ -8,6 +8,15 @@ import { resolveServiceIntent } from "../../services/routing/serviceIntentResolv
 import { executePurchaseOrderFlow } from "../../services/procurement/purchaseOrderFlow.service.js";
 import { detectDocumentFlowIntent, isPurchaseOrderFlowRequest } from "../../services/procurement/procurementQueryEngine.service.js";
 import {
+  assertPendingPoServiceCompatibility,
+  buildPendingPoIntentPayload,
+  detectPendingPoIntent,
+  extractPendingPoNumber,
+  getPendingPurchaseOrderList,
+  PENDING_PO_ENTITY_SET,
+  PENDING_PO_SERVICE_NAME,
+} from "../../services/procurement/pendingPurchaseOrder.service.js";
+import {
   hasPoQuerySignals,
   hasStructuredPoRequest,
 } from "../../services/extractor/extractor.service.js";
@@ -87,25 +96,119 @@ function buildDocumentFlowServiceIntent({ query, serviceIntent, systemId, servic
   };
 }
 
+function resolvePendingPoServiceMap(catalogs = [], fallbackSystemId = "") {
+  const rows = Array.isArray(catalogs) ? catalogs : [];
+
+  const preferred = rows.find((catalog) => {
+    const serviceName = String(catalog?.serviceName || "").trim().toUpperCase();
+    const entitySet = String(catalog?.entitySet || "").trim().toUpperCase();
+    return serviceName === PENDING_PO_SERVICE_NAME || entitySet === PENDING_PO_ENTITY_SET;
+  });
+  if (preferred) return preferred;
+
+  return null;
+}
+
+function inferEntityTypeName(service = {}) {
+  const explicit = String(service?.entityTypeName || "").trim();
+  if (explicit) return explicit;
+  const entitySet = String(service?.entitySet || "").trim();
+  if (!entitySet) return "";
+  return entitySet.replace(/Set$/i, "");
+}
+
+function hasRequiredPendingPoFields(fields = []) {
+  const normalize = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const set = new Set((Array.isArray(fields) ? fields : []).map((f) => normalize(f)));
+
+  const hasAny = (candidates) => candidates.some((name) => set.has(normalize(name)));
+
+  const hasPoNo = hasAny(["po_no", "PoNo", "EBELN"]);
+  const hasPoItem = hasAny(["po_item", "PoItem", "EBELP"]);
+  const hasDate = hasAny(["po_doc_date", "PoDocDate", "CrtDate", "BEDAT"]);
+  const hasDirectPending = hasAny(["Pending_PO_Quantity", "pending_qty", "PendingQty"]);
+  const hasOrdered = hasAny(["PO_Quantity", "PoQuantity", "Menge"]);
+  const hasDelivered = hasAny(["Delivered", "delivered_qty", "Wemng"]);
+
+  return hasPoNo && hasPoItem && hasDate && (hasDirectPending || (hasOrdered && hasDelivered));
+}
+
+async function resolveCompatiblePendingPoService({ catalogs = [], system, sapAuth }) {
+  const preferred = resolvePendingPoServiceMap(catalogs, system?.systemId || "");
+  const ordered = preferred
+    ? [preferred, ...catalogs.filter((row) => row !== preferred)]
+    : catalogs;
+
+  for (const candidate of ordered) {
+    if (!candidate?.serviceName || !candidate?.entitySet) continue;
+
+    try {
+      const { fields } = await getAllowedFieldsWithLabels({
+        system,
+        service: candidate,
+        entityTypeName: inferEntityTypeName(candidate),
+        authOverride: sapAuth,
+      });
+
+      if (hasRequiredPendingPoFields(fields)) {
+        return {
+          ...candidate,
+          pendingPoFields: fields,
+        };
+      }
+    } catch {
+      // Ignore individual candidate metadata failures and continue probing other mappings.
+    }
+  }
+
+  return null;
+}
+
+function normalizeDateOnly(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+
+  const datePortion = text.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(datePortion)) return datePortion;
+  return "";
+}
+
 function detectPendingInvoiceIntent(query) {
   const text = String(query || "").toLowerCase();
   if (!text) return null;
 
+  const normalized = text.replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+  const hasPendingSignal =
+    /\b(pending|remain(?:ing)?|yet\s+to|not\s+completed|status)\b/i.test(normalized) &&
+    /\b(po|purchase\s*order)\b/i.test(normalized);
+  const hasInvoiceSignal =
+    /\b(invoice|invoices|invocie|inovice|invioce|invioice)\b/i.test(normalized);
+
   const intentHints = [
     "pending invoice",
+    "pending invocie",
     "pending quantity",
     "invoice pending",
+    "invocie pending",
     "invoice status",
     "remaining invoice quantity",
     "invoice not completed",
     "quantity yet to invoice",
+    "quantity yet to invocie",
     "show pending invoice",
+    "show pending invocie",
     "show pending quantity",
     "how much quantity is pending for invoice",
+    "how much quantity is pending for invocie",
     "remaining quantity to invoice",
+    "remaining quantity to invocie",
   ];
 
   if (intentHints.some((hint) => text.includes(hint))) return "PENDING_INVOICE_STATUS";
+  if (hasPendingSignal && hasInvoiceSignal) return "PENDING_INVOICE_STATUS";
   return null;
 }
 
@@ -186,65 +289,199 @@ function buildProcurementFlowReply({
 
   const sections = [];
 
-  sections.push([
-    "Purchase Document Summary",
-    `PO Number: ${cleanText(primary.PoNo || poNo)}`,
-    `PO Item: ${cleanText(primary.PoItem || poItem)}`,
-  ]);
+  function buildTable(title, rows) {
+    const visibleRows = (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row) && row.length > 0);
+    if (!visibleRows.length) return "";
+
+    const header = `| Field | Value |`;
+    const separator = `| --- | --- |`;
+    const body = visibleRows.map(([field, value]) => `| ${field} | ${value} |`).join("\n");
+    return [title, "", header, separator, body].join("\n");
+  }
+
+  sections.push(
+    buildTable("Purchase Document Summary", [
+      ["PO Number", cleanText(primary.PoNo || poNo)],
+      ["PO Item", cleanText(primary.PoItem || poItem)],
+    ])
+  );
 
   if (allowMaterial && materialRows.length > 0) {
-    sections.push([
-      "Material Document",
-      `Material Document Number: ${cleanText(material.mat_doc_no1 || material.MBLNR)}`,
-      `Movement Type: ${cleanText(material.movement_type || material.BWART)}`,
-      `Posting Date: ${cleanText(material.posting_date || material.BUDAT)}`,
-      `Quantity: ${cleanText(material.quantity || material.Menge)}`,
-      `Material Number: ${cleanText(material.material_no || material.MatNo)}`,
-      `Supplier Account: ${cleanText(material.supplier_acc_no || material.LIFNR)}`,
-    ]);
+    sections.push(
+      buildTable("Material Document", [
+        ["Material Document Number", cleanText(material.mat_doc_no1 || material.MBLNR)],
+        ["Movement Type", cleanText(material.movement_type || material.BWART)],
+        ["Posting Date", cleanText(material.posting_date || material.BUDAT)],
+        ["Quantity", cleanText(material.quantity || material.Menge)],
+        ["Material Number", cleanText(material.material_no || material.MatNo)],
+        ["Supplier Account", cleanText(material.supplier_acc_no || material.LIFNR)],
+      ])
+    );
   }
 
   if (allowInvoice && invoiceRows.length > 0) {
-    sections.push([
-      "Invoice Details",
-      `Invoice Number: ${cleanText(invoice.acc_doc_no || invoice.BELNR)}`,
-      `Fiscal Year: ${cleanText(invoice.fiscal_year || invoice.GJAHR)}`,
-      `Invoice Item: ${cleanText(invoice.invoice_item || invoice.InvoiceItem || invoice.BUZEI)}`,
-      `Quantity: ${cleanText(invoice.quantity || invoice.InvoiceQuantity || invoice.MENGE)}`,
-      `Invoice Amount: ${cleanText(invoice.inv_amt_supplier || invoice.InvoiceAmount || invoice.amt_doc_curr)}`,
-      `Supplier Account: ${cleanText(invoice.supplier_acc_no || invoice.SupplierAccountNumber)}`,
-    ]);
+    sections.push(
+      buildTable("Invoice Details", [
+        ["Invoice Number", cleanText(invoice.acc_doc_no || invoice.BELNR)],
+        ["Fiscal Year", cleanText(invoice.fiscal_year || invoice.GJAHR)],
+        ["Invoice Item", cleanText(invoice.invoice_item || invoice.InvoiceItem || invoice.BUZEI)],
+        ["Quantity", cleanText(invoice.quantity || invoice.InvoiceQuantity || invoice.MENGE)],
+        ["Invoice Amount", cleanText(invoice.inv_amt_supplier || invoice.InvoiceAmount || invoice.amt_doc_curr)],
+        ["Supplier Account", cleanText(invoice.supplier_acc_no || invoice.SupplierAccountNumber)],
+      ])
+    );
   }
 
   if (allowInvoice && rbkpRows.length > 0) {
-    sections.push([
-      "Invoice Header",
-      `Invoice Document: ${cleanText(header.invoice_doc_no || header.BELNR || header.InvoiceDocNo)}`,
-      `Fiscal Year: ${cleanText(header.fiscal_year || header.GJAHR)}`,
-      `Company Code: ${cleanText(header.company_code || header.BUKRS)}`,
-      `Invoice Party: ${cleanText(header.invoice_party || header.Supplier || header.LIFNR)}`,
-      `Gross Amount: ${cleanText(header.gross_amount || header.WRBTR)}`,
-    ]);
+    sections.push(
+      buildTable("Invoice Header", [
+        ["Invoice Document", cleanText(header.invoice_doc_no || header.BELNR || header.InvoiceDocNo)],
+        ["Fiscal Year", cleanText(header.fiscal_year || header.GJAHR)],
+        ["Company Code", cleanText(header.company_code || header.BUKRS)],
+        ["Invoice Party", cleanText(header.invoice_party || header.Supplier || header.LIFNR)],
+        ["Gross Amount", cleanText(header.gross_amount || header.WRBTR)],
+      ])
+    );
   }
 
   if (allowAccounting && acdocaRows.length > 0) {
-    sections.push([
-      "Accounting Details",
-      `Accounting Document Number: ${cleanText(accounting.doc_no_acctng_doc || accounting.AccountingDocument || accounting.BELNR)}`,
-      `Company Code: ${cleanText(accounting.company_code || accounting.BUKRS)}`,
-      `Account Number: ${cleanText(accounting.account_no || accounting.GLAccount || accounting.HKONT)}`,
-      `Supplier Account: ${cleanText(accounting.supplier_acc_no || accounting.SupplierAccountNumber)}`,
-      `Material Number: ${cleanText(accounting.material_no || accounting.MATNR)}`,
-      `Amount: ${cleanText(accounting.amt_company || accounting.Amount || accounting.WRBTR)}`,
-    ]);
+    sections.push(
+      buildTable("Accounting Details", [
+        ["Accounting Document Number", cleanText(accounting.doc_no_acctng_doc || accounting.AccountingDocument || accounting.BELNR)],
+        ["Company Code", cleanText(accounting.company_code || accounting.BUKRS)],
+        ["Account Number", cleanText(accounting.account_no || accounting.GLAccount || accounting.HKONT)],
+        ["Supplier Account", cleanText(accounting.supplier_acc_no || accounting.SupplierAccountNumber)],
+        ["Material Number", cleanText(accounting.material_no || accounting.MATNR)],
+        ["Amount", cleanText(accounting.amt_company || accounting.Amount || accounting.WRBTR)],
+      ])
+    );
   }
 
   return sections
-    .map((lines) => lines.join("\n"))
+    .filter(Boolean)
     .join("\n\n");
 }
 
+function buildProcurementFlowSections({
+  poRows = [],
+  materialRows = [],
+  invoiceRows = [],
+  rbkpRows = [],
+  acdocaRows = [],
+  poNo = "NULL",
+  poItem = "NULL",
+  documentFlowIntent = "COMPLETE_DOCUMENT_FLOW",
+} = {}) {
+  const primary = Array.isArray(poRows) ? poRows[0] || {} : {};
+
+  const normalizedIntent = String(documentFlowIntent || "COMPLETE_DOCUMENT_FLOW").trim().toUpperCase();
+  const allowMaterial = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "MATERIAL_DOCUMENT";
+  const allowInvoice = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "INVOICE_DETAILS";
+  const allowAccounting = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "ACCOUNTING_DOCUMENT";
+
+  const sections = [
+    {
+      title: "Purchase Document Summary",
+      columns: ["PO Number", "PO Item", "Material Number", "Quantity"],
+      rows: (Array.isArray(poRows) && poRows.length > 0 ? poRows : [primary]).map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.MatNo || row?.MaterialNumber || row?.Material || row?.material_no),
+        cleanText(row?.PO_Quantity || row?.PoQuantity || row?.Menge || row?.Quantity || row?.TotalPoQuantity),
+      ]),
+    },
+  ];
+
+  if (allowMaterial && materialRows.length > 0) {
+    sections.push({
+      title: "Material Document",
+      columns: ["PO Number", "PO Item", "Material Document Number", "Movement Type", "Posting Date", "Quantity", "Material Number", "Supplier Account"],
+      rows: materialRows.map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.mat_doc_no1 || row?.MBLNR),
+        cleanText(row?.movement_type || row?.BWART),
+        cleanText(row?.posting_date || row?.BUDAT),
+        cleanText(row?.quantity || row?.Menge),
+        cleanText(row?.material_no || row?.MatNo),
+        cleanText(row?.supplier_acc_no || row?.LIFNR),
+      ]),
+    });
+  }
+
+  if (allowInvoice && invoiceRows.length > 0) {
+    sections.push({
+      title: "Invoice Details",
+      columns: ["PO Number", "PO Item", "Invoice Number", "Fiscal Year", "Invoice Item", "Quantity", "Invoice Amount", "Supplier Account"],
+      rows: invoiceRows.map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.acc_doc_no || row?.BELNR),
+        cleanText(row?.fiscal_year || row?.GJAHR),
+        cleanText(row?.invoice_item || row?.InvoiceItem || row?.BUZEI),
+        cleanText(row?.quantity || row?.InvoiceQuantity || row?.MENGE),
+        cleanText(row?.inv_amt_supplier || row?.InvoiceAmount || row?.amt_doc_curr),
+        cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+      ]),
+    });
+  }
+
+  if (allowInvoice && rbkpRows.length > 0) {
+    sections.push({
+      title: "Invoice Header",
+      columns: ["Invoice Document", "Fiscal Year", "Company Code", "Invoice Party", "Gross Amount"],
+      rows: rbkpRows.map((row) => [
+        cleanText(row?.invoice_doc_no || row?.BELNR || row?.InvoiceDocNo),
+        cleanText(row?.fiscal_year || row?.GJAHR),
+        cleanText(row?.company_code || row?.BUKRS),
+        cleanText(row?.invoice_party || row?.Supplier || row?.LIFNR),
+        cleanText(row?.gross_amount || row?.WRBTR),
+      ]),
+    });
+  }
+
+  if (allowAccounting && acdocaRows.length > 0) {
+    sections.push({
+      title: "Accounting Details",
+      columns: ["Accounting Document Number", "Company Code", "Account Number", "Supplier Account", "Material Number", "Amount"],
+      rows: acdocaRows.map((row) => [
+        cleanText(row?.doc_no_acctng_doc || row?.AccountingDocument || row?.BELNR),
+        cleanText(row?.company_code || row?.BUKRS),
+        cleanText(row?.account_no || row?.GLAccount || row?.HKONT),
+        cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+        cleanText(row?.material_no || row?.MATNR),
+        cleanText(row?.amt_company || row?.Amount || row?.WRBTR),
+      ]),
+    });
+  }
+
+  return sections;
+}
+
 function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NULL", poItem = "NULL" } = {}) {
+  const statusRows = buildPendingInvoiceStatusRows({
+    poRows: poRow && Object.keys(poRow).length ? [poRow] : [],
+    rsegRows,
+    poNo,
+  });
+
+  if (statusRows.length > 1) {
+    const lines = [
+      "Pending Invoice Status",
+      "",
+      `PO Number: ${cleanText(poNo)}`,
+      `Items Evaluated: ${statusRows.length}`,
+      "",
+      "| PO Item | Material | Ordered Quantity | Invoiced Quantity | Pending Quantity | Invoice Status |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...statusRows.map((row) =>
+        `| ${cleanText(row.poItem)} | ${cleanText(row.material)} | ${formatQuantityValue(row.orderedQuantity)} | ${formatQuantityValue(row.invoicedQuantity)} | ${formatQuantityValue(row.pendingQuantity)} | ${cleanText(row.invoiceStatus)} |`
+      ),
+    ];
+
+    return lines.join("\n");
+  }
+
   const rows = Array.isArray(rsegRows) ? rsegRows : [];
   const orderedQuantityValue = getPoOrderedQuantity(poRow);
   const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
@@ -276,8 +513,119 @@ function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NUL
   ].join("\n");
 }
 
+function buildPendingInvoiceStatusRows({ poRows = [], rsegRows = [], poNo = "NULL" } = {}) {
+  const sourcePoRows = Array.isArray(poRows) ? poRows : [];
+  const sourceRsegRows = Array.isArray(rsegRows) ? rsegRows : [];
+
+  const rsegByPoItem = new Map();
+  for (const row of sourceRsegRows) {
+    const item = normalizeNumericId(
+      row?.purch_item_no || row?.PoItem || row?.po_item || row?.EBELP || row?.invoice_item || row?.InvoiceItem || row?.BUZEI || "",
+      5
+    );
+    if (!item) continue;
+
+    if (!rsegByPoItem.has(item)) {
+      rsegByPoItem.set(item, []);
+    }
+    rsegByPoItem.get(item).push(row);
+  }
+
+  const statusRows = sourcePoRows.map((row) => {
+    const normalizedPoItem = normalizeNumericId(row?.PoItem || row?.po_item || row?.poItem || row?.EBELP || "", 5);
+    const matchingInvoices = normalizedPoItem ? (rsegByPoItem.get(normalizedPoItem) || []) : [];
+
+    const orderedQuantityValue = getPoOrderedQuantity(row);
+    const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
+    const invoicedQuantity = matchingInvoices.reduce((sum, item) => sum + (Number(item?.quantity || item?.InvoiceQuantity || item?.MENGE) || 0), 0);
+    const pendingQuantity = Math.max(orderedQuantity - invoicedQuantity, 0);
+    const invoiceStatus = matchingInvoices.length === 0 ? "Not Invoiced" : pendingQuantity > 0 ? "Pending" : "Completed";
+
+    return {
+      poNumber: cleanText(row?.PoNo || row?.EBELN || poNo),
+      poItem: cleanText(normalizedPoItem || row?.PoItem || row?.EBELP || "NULL"),
+      material: cleanText(row?.MatNo || row?.material_no),
+      orderedQuantity,
+      invoicedQuantity,
+      pendingQuantity,
+      invoiceStatus,
+    };
+  });
+
+  return statusRows;
+}
+
+function buildPendingInvoiceStatusSections({ poRow = {}, poRows = [], rsegRows = [], poNo = "NULL", poItem = "NULL" } = {}) {
+  const derivedPoRows = Array.isArray(poRows) && poRows.length > 0
+    ? poRows
+    : (poRow && Object.keys(poRow).length ? [poRow] : []);
+  const statusRows = buildPendingInvoiceStatusRows({
+    poRows: derivedPoRows,
+    rsegRows,
+    poNo,
+  });
+
+  if (statusRows.length > 1) {
+    return [
+      {
+        title: "Pending Invoice Status",
+        columns: [
+          "PO Number",
+          "PO Item",
+          "Material",
+          "Ordered Quantity",
+          "Invoiced Quantity",
+          "Pending Quantity",
+          "Invoice Status",
+        ],
+        rows: statusRows.map((row) => [
+          cleanText(row.poNumber),
+          cleanText(row.poItem),
+          cleanText(row.material),
+          formatQuantityValue(row.orderedQuantity),
+          formatQuantityValue(row.invoicedQuantity),
+          formatQuantityValue(row.pendingQuantity),
+          cleanText(row.invoiceStatus),
+        ]),
+      },
+    ];
+  }
+
+  const rows = Array.isArray(rsegRows) ? rsegRows : [];
+  const orderedQuantityValue = getPoOrderedQuantity(poRow);
+  const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
+  const invoicedQuantity = rows.reduce((sum, row) => sum + (Number(row?.quantity) || 0), 0);
+  const pendingQuantity = Math.max(orderedQuantity - invoicedQuantity, 0);
+  const invoiceStatus = rows.length === 0 ? "Not Invoiced" : pendingQuantity > 0 ? "Pending" : "Completed";
+
+  return [
+    {
+      title: "Pending Invoice Status",
+      columns: [
+        "PO Number",
+        "PO Item",
+        "Material",
+        "Ordered Quantity",
+        "Invoiced Quantity",
+        "Pending Quantity",
+        "Invoice Status",
+      ],
+      rows: [[
+        cleanText(poRow?.PoNo || poNo),
+        cleanText(poRow?.PoItem || poItem),
+        cleanText(poRow?.MatNo || poRow?.material_no),
+        formatQuantityValue(orderedQuantityValue),
+        formatQuantityValue(invoicedQuantity),
+        formatQuantityValue(pendingQuantity),
+        invoiceStatus,
+      ]],
+    },
+  ];
+}
+
 export {
   buildPendingInvoiceStatusReply,
+  buildPendingInvoiceStatusSections,
   buildProcurementFlowReply,
   detectPendingInvoiceIntent,
   getPendingInvoiceExecutionPlan,
@@ -997,6 +1345,144 @@ export async function handleS4poChatStream({
     extracted.dateText = extracted.dateText || explicitDateText;
   }
 
+  const pendingPoIntentDetected = detectPendingPoIntent(query);
+  if (pendingPoIntentDetected) {
+    const pendingIntentPayload = buildPendingPoIntentPayload(query, {
+      pageSize: Number(req?.body?.limit) || 30,
+    });
+
+    const fallbackDateFrom = normalizeDateOnly(extracted?.fromDate);
+    const fallbackDateTo = normalizeDateOnly(extracted?.toDate);
+    const effectiveDateFrom = normalizeDateOnly(explicitFromDate) || fallbackDateFrom || pendingIntentPayload.date_from;
+    const effectiveDateTo = normalizeDateOnly(explicitToDate) || fallbackDateTo || pendingIntentPayload.date_to;
+    const requestedPoNo = String(
+      extracted?.docNumber ||
+      serviceIntent?.docNumber ||
+      extractPendingPoNumber(query) ||
+      ""
+    ).trim();
+    const hasExplicitDateFilter = Boolean(
+      normalizeDateOnly(explicitFromDate) ||
+      normalizeDateOnly(explicitToDate) ||
+      fallbackDateFrom ||
+      fallbackDateTo
+    );
+    const queryDateFrom = requestedPoNo && !hasExplicitDateFilter ? "" : effectiveDateFrom;
+    const queryDateTo = requestedPoNo && !hasExplicitDateFilter ? "" : effectiveDateTo;
+
+    const pendingPoServices = await step("load Pending PO Service Map", async () =>
+      SapServiceMap.find({
+        owner: { $in: [getDeploymentOwner("local"), "local"] },
+        systemId: actualSystemId,
+        serviceType: "PO",
+        isActive: true,
+      })
+        .sort({ updatedAt: -1 })
+        .lean()
+    );
+
+    const pendingPoService = await step("resolve Pending PO compatible service", async () =>
+      resolveCompatiblePendingPoService({
+        catalogs: pendingPoServices,
+        system,
+        sapAuth,
+      })
+    );
+    assertPendingPoServiceCompatibility(pendingPoService);
+    const listResult = await step("executePendingPurchaseOrderList", async () =>
+      getPendingPurchaseOrderList({
+        system,
+        sapAuth,
+        service: pendingPoService,
+        dateFrom: queryDateFrom,
+        dateTo: queryDateTo,
+        poNo: requestedPoNo,
+        pageSize: pendingIntentPayload.page_size,
+        cursor: null,
+      })
+    );
+
+    const summaryText = listResult.count > 0
+      ? (requestedPoNo && !hasExplicitDateFilter
+        ? `Showing ${listResult.count} pending purchase order(s) for PO ${requestedPoNo}.`
+        : `Showing ${listResult.count} pending purchase order(s) from ${effectiveDateFrom} to ${effectiveDateTo}.`)
+      : (requestedPoNo && !hasExplicitDateFilter
+        ? `No pending purchase orders found for PO ${requestedPoNo}.`
+        : "No pending purchase orders found for the selected period.");
+
+    await step("save assistant message", () =>
+      saveAssistantMessage({
+        owner,
+        sessionId: session._id,
+        text: summaryText,
+        summary: summaryText,
+        extracted: {
+          ...extracted,
+          intent: "GET_PENDING_PO_LIST",
+          dateFrom: queryDateFrom,
+          dateTo: queryDateTo,
+          docNumber: requestedPoNo || extracted?.docNumber || "",
+          limit: listResult.pageSize,
+          skip: 0,
+        },
+        sapRequest: null,
+        data: {
+          ...listResult,
+          dateFrom: queryDateFrom,
+          dateTo: queryDateTo,
+          requestContext: {
+            systemId: actualSystemId,
+            sapUser: effectiveSapUser,
+            dateFrom: queryDateFrom,
+            dateTo: queryDateTo,
+            poNo: requestedPoNo,
+            pageSize: listResult.pageSize,
+            nextPage: listResult.nextPage,
+          },
+        },
+        suggestions: [],
+        responseMeta: {
+          ok: true,
+          kind: "stream",
+          returned: listResult.count,
+          routingSystemId,
+          executionSystemId: actualSystemId,
+          sapUser: effectiveSapUser,
+          serviceName: pendingPoService.serviceName,
+          entitySet: pendingPoService.entitySet,
+        },
+      })
+    );
+
+    sse.send("reply", {
+      ok: true,
+      kind: "stream",
+      sessionId: String(session._id),
+      systemId: actualSystemId,
+      sapUser: effectiveSapUser,
+      reply: summaryText,
+      summary: summaryText,
+      data: {
+        ...listResult,
+        dateFrom: queryDateFrom,
+        dateTo: queryDateTo,
+        requestContext: {
+          systemId: actualSystemId,
+          sapUser: effectiveSapUser,
+          dateFrom: queryDateFrom,
+          dateTo: queryDateTo,
+          poNo: requestedPoNo,
+          pageSize: listResult.pageSize,
+          nextPage: listResult.nextPage,
+        },
+      },
+      suggestions: [],
+    });
+
+    sse.send("done", { ok: true, sessionId: String(session._id) });
+    return sse.end();
+  }
+
   const pendingInvoiceIntent = detectPendingInvoiceIntent(query);
   if (pendingInvoiceIntent) {
     const pendingContext = extractPendingInvoiceContext(query);
@@ -1057,10 +1543,10 @@ export async function handleS4poChatStream({
         pendingContext.poNumber || effectiveServiceIntent?.docNumber || extracted.docNumber || "",
         Number(poService.idPad) || 10
       );
-      const targetPoItem = normalizeNumericId(
-        pendingContext.poItem || effectiveServiceIntent?.docItem || extracted.docItem || "",
-        Number(poService.itemPad) || 5
-      );
+      const hasExplicitPoItem = Boolean(String(pendingContext.poItem || "").trim());
+      const targetPoItem = hasExplicitPoItem
+        ? normalizeNumericId(String(pendingContext.poItem || ""), Number(poService.itemPad) || 5)
+        : "";
       const matchingPoRows = poRows.filter((row) => {
         const rowPoNo = normalizeNumericId(row?.PoNo || row?.po_no || row?.poNo || row?.EBELN || "", Number(poService.idPad) || 10);
         return rowPoNo === targetPoNo;
@@ -1087,18 +1573,28 @@ export async function handleS4poChatStream({
       const resolvedPoNo = normalizeNumericId(pendingContext.poNumber || poRow?.PoNo || poRow?.EBELN || effectiveServiceIntent?.docNumber || extracted.docNumber || "", Number(poService.idPad) || 10);
       const resolvedPoItem = normalizeNumericId(pendingContext.poItem || poRow?.PoItem || poRow?.EBELP || effectiveServiceIntent?.docItem || extracted.docItem || "", Number(poService.itemPad) || 5);
 
+      const rsegFilter = targetPoItem
+        ? `purch_doc_no eq '${resolvedPoNo}' and purch_item_no eq '${targetPoItem}'`
+        : `purch_doc_no eq '${resolvedPoNo}'`;
       const rsegQuery = buildEntitySetQuery(rsegService.entitySet, {
-        $filter: `purch_doc_no eq '${resolvedPoNo}' and purch_item_no eq '${resolvedPoItem}'`,
+        $filter: rsegFilter,
         $top: 200,
       }, { maxTop: 200 });
       const rsegResponse = await fetchFromSap({ system, service: rsegService, relativePath: rsegQuery }, sapAuth);
       const rsegRows = toResultsArray(rsegResponse);
+
+      const statusRows = buildPendingInvoiceStatusRows({
+        poRows: hasExplicitPoItem ? (itemMatchedRows.length > 0 ? itemMatchedRows : matchingPoRows) : matchingPoRows,
+        rsegRows,
+        poNo: resolvedPoNo,
+      });
 
       return {
         ok: true,
         poRows,
         rsegRows,
         poRow,
+        statusRows,
         resolvedPoNo,
         resolvedPoItem,
       };
@@ -1106,6 +1602,17 @@ export async function handleS4poChatStream({
 
     const reply = buildPendingInvoiceStatusReply({
       poRow: flowResult.poRow,
+      rsegRows: flowResult.rsegRows,
+      poNo: flowResult.resolvedPoNo,
+      poItem: flowResult.resolvedPoItem,
+    });
+    const sections = buildPendingInvoiceStatusSections({
+      poRow: flowResult.poRow,
+      poRows: flowResult.statusRows?.length > 0
+        ? (flowResult.poRows || []).filter((row) =>
+            flowResult.statusRows.some((item) => cleanText(item.poItem) === cleanText(row?.PoItem || row?.poItem || row?.EBELP || ""))
+          )
+        : [],
       rsegRows: flowResult.rsegRows,
       poNo: flowResult.resolvedPoNo,
       poItem: flowResult.resolvedPoItem,
@@ -1131,6 +1638,7 @@ export async function handleS4poChatStream({
           poNo: flowResult.resolvedPoNo,
           poItem: flowResult.resolvedPoItem,
           pendingInvoiceStatus: reply,
+          sections,
         },
         suggestions: [
           `Show invoice details for PO ${flowResult.resolvedPoNo}`,
@@ -1162,6 +1670,7 @@ export async function handleS4poChatStream({
         flow: flowResult,
         poNo: flowResult.resolvedPoNo,
         poItem: flowResult.resolvedPoItem,
+        sections,
       },
     });
 
@@ -1206,12 +1715,16 @@ export async function handleS4poChatStream({
         req: {
           system,
           sapAuth,
-          body: { purchaseOrderId: extracted.docNumber || effectiveServiceIntent?.docNumber || "" },
+          body: {
+            purchaseOrderId: extracted.docNumber || effectiveServiceIntent?.docNumber || "",
+            purchaseOrderItem: extracted.docItem || effectiveServiceIntent?.docItem || "",
+          },
         },
         catalogs: flowServices,
         plan: {
           primary: { serviceType: "PO" },
           poNumber: extracted.docNumber || effectiveServiceIntent?.docNumber || "",
+          poItem: extracted.docItem || effectiveServiceIntent?.docItem || "",
           documentFlowIntent: normalizedDocumentFlowIntent,
         },
         query,
@@ -1233,8 +1746,22 @@ export async function handleS4poChatStream({
     const invoiceNumber = invoiceRows[0]?.InvoiceNumber || invoiceRows[0]?.BELNR || "-";
     const fiscalYear = invoiceRows[0]?.FiscalYear || invoiceRows[0]?.GJAHR || "-";
 
+    const procurementPoRows = Array.isArray(flowResult?.consolidated?.purchaseOrder?.rows) && flowResult.consolidated.purchaseOrder.rows.length > 0
+      ? flowResult.consolidated.purchaseOrder.rows
+      : primaryRows;
+
+    const sections = buildProcurementFlowSections({
+      poRows: procurementPoRows,
+      materialRows,
+      invoiceRows,
+      rbkpRows,
+      acdocaRows,
+      poNo,
+      poItem,
+      documentFlowIntent: normalizedDocumentFlowIntent,
+    });
     const reply = buildProcurementFlowReply({
-      poRows: primaryRows,
+      poRows: procurementPoRows,
       materialRows,
       invoiceRows,
       rbkpRows,
@@ -1245,6 +1772,17 @@ export async function handleS4poChatStream({
     });
 
     const chart = flowResult?.result?.chartData || flowResult?.result?.chart || null;
+    const procurementRequestContext = {
+      query: String(query || "").trim(),
+      systemId: actualSystemId,
+      sapUser: effectiveSapUser,
+      sessionId: String(session?._id || "").trim() || null,
+      cursor: req.body?.cursor ?? null,
+      businessScope: String(req.body?.businessScope || "").trim(),
+      pendingAction: req.body?.pendingAction || null,
+      availableSystems: Array.isArray(req.body?.availableSystems) ? req.body.availableSystems : null,
+      documentFlowIntent: normalizedDocumentFlowIntent,
+    };
 
     await step("save assistant message", () =>
       saveAssistantMessage({
@@ -1259,6 +1797,7 @@ export async function handleS4poChatStream({
           flow: flowResult,
           rows: allRows,
           tableRows: allRows,
+          sections,
           chartData: chart,
           chart,
           poNo,
@@ -1266,6 +1805,7 @@ export async function handleS4poChatStream({
           materialDocument,
           invoiceNumber,
           fiscalYear,
+          procurementRequestContext,
         },
         suggestions: [
           `Show accounting details for PO ${poNo}`,
@@ -1299,6 +1839,7 @@ export async function handleS4poChatStream({
         rows: allRows,
         tableRecords: allRows,
         allRecords: allRows,
+        sections,
         chart,
         statusDistribution: chart,
         poNo,
@@ -1306,6 +1847,7 @@ export async function handleS4poChatStream({
         materialDocument,
         invoiceNumber,
         fiscalYear,
+        procurementRequestContext,
       },
       suggestions: [
         `Show accounting details for PO ${poNo}`,

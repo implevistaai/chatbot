@@ -189,6 +189,46 @@ export async function getPurchaseOrderDetails({ systemId, sapUser, purchaseOrder
   return payload;
 }
 
+export async function getProcurementFlowDetailsByItem({
+  systemId,
+  sapUser,
+  purchaseOrderId,
+  purchaseOrderItem,
+  query = "",
+  businessScope = "",
+  cursor = null,
+  pendingAction = null,
+  availableSystems = null,
+  documentFlowIntent = "",
+}) {
+  const res = await authFetch(`${apiBase}/chat/actions/s4hana/get-procurement-flow-details-by-item`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemId,
+      sapUser,
+      purchaseOrderId,
+      purchaseOrderItem,
+      query,
+      businessScope,
+      cursor,
+      pendingAction,
+      availableSystems,
+      documentFlowIntent,
+    }),
+  });
+
+  const payload = await readResponseBody(res);
+
+  if (!res.ok || payload?.ok === false || payload?.status === "validation_failed" || payload?.status === "execution_failed") {
+    throw new Error(payload?.error || payload?.message || "Failed to fetch procurement flow details.");
+  }
+
+  return payload;
+}
+
 export async function getS4dPurchaseOrderDetails({ systemId, sapUser, poNumber }) {
   const cleanSystemId = String(systemId || "").trim();
   const cleanSapUser = String(sapUser || "").trim();
@@ -204,6 +244,70 @@ export async function getS4dPurchaseOrderDetails({ systemId, sapUser, poNumber }
 
   if (!res.ok || payload?.success === false) {
     throw new Error(payload?.error || payload?.message || "Failed to fetch purchase order details.");
+  }
+
+  return payload;
+}
+
+export async function getPendingPurchaseOrders({
+  systemId,
+  sapUser,
+  dateFrom,
+  dateTo,
+  poNo = "",
+  pageSize = 30,
+  cursor = null,
+}) {
+  const res = await authFetch(`${apiBase}/chat/actions/s4hana/get-pending-purchase-orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemId,
+      sapUser,
+      dateFrom,
+      dateTo,
+      poNo,
+      pageSize,
+      cursor,
+    }),
+  });
+
+  const payload = await readResponseBody(res);
+
+  if (!res.ok || payload?.ok === false || payload?.status === "validation_failed" || payload?.status === "execution_failed") {
+    throw new Error(payload?.error || payload?.message || "Unable to retrieve pending purchase orders. Please try again.");
+  }
+
+  return payload;
+}
+
+export async function getPendingPurchaseOrderItems({
+  systemId,
+  sapUser,
+  poNo,
+  dateFrom,
+  dateTo,
+}) {
+  const res = await authFetch(`${apiBase}/chat/actions/s4hana/get-pending-purchase-order-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemId,
+      sapUser,
+      poNo,
+      dateFrom,
+      dateTo,
+    }),
+  });
+
+  const payload = await readResponseBody(res);
+
+  if (!res.ok || payload?.ok === false || payload?.status === "validation_failed" || payload?.status === "execution_failed") {
+    throw new Error(payload?.error || payload?.message || "Unable to load items for this PO. Please try again.");
   }
 
   return payload;

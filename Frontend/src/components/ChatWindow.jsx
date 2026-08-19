@@ -290,6 +290,7 @@ const isConnected = useMemo(() => {
   const [msgLoadingMore, setMsgLoadingMore] = useState(false);
   const [msgHasMore, setMsgHasMore] = useState(true);
   const hydratedSessionRef = useRef(null);
+  const fetchedSessionRef = useRef(null);
 
   const messagesElRef = useRef(null);
 
@@ -551,14 +552,22 @@ const isConnected = useMemo(() => {
   ]);
 
   useEffect(() => {
+    if (!canFetchDbMessages || !resolvedSessionId) {
+      hydratedSessionRef.current = null;
+      fetchedSessionRef.current = null;
+      setMsgNextBefore(null);
+      setMsgHasMore(true);
+      return;
+    }
+
+    if (fetchedSessionRef.current === resolvedSessionId) return;
+
+    hydratedSessionRef.current = resolvedSessionId;
+    fetchedSessionRef.current = resolvedSessionId;
     setMsgNextBefore(null);
     setMsgHasMore(true);
-
-    if (canFetchDbMessages && hydratedSessionRef.current !== resolvedSessionId) {
-      hydratedSessionRef.current = resolvedSessionId;
-      fetchLatestMessages();
-    }
-  }, [canFetchDbMessages, fetchLatestMessages]);
+    fetchLatestMessages();
+  }, [canFetchDbMessages, resolvedSessionId, fetchLatestMessages]);
 
   const onMessagesScrollInternal = useCallback(
     (e) => {

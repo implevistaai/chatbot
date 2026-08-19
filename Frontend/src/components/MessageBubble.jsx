@@ -4,7 +4,13 @@ import ReplyTable from "./ReplyTable";
 import PODetailsDrawer from "./PODetailsDrawer";
 import { replyToTable } from "../utils/replyToTable";
 import { checkSolmanTransportDependencies, getSolmanChangeRequestDetails, listSolmanTransports } from "../api/solmanApi";
-import { getPurchaseOrderDetails, getS4dPurchaseOrderDetails } from "../api/chatApi";
+import {
+  getPendingPurchaseOrderItems,
+  getPendingPurchaseOrders,
+  getProcurementFlowDetailsByItem,
+  getPurchaseOrderDetails,
+  getS4dPurchaseOrderDetails,
+} from "../api/chatApi";
 import {
   Cell,
   Legend,
@@ -576,6 +582,113 @@ function PoDrawer({ open, title, loading, error, row, onClose }) {
   return createPortal(drawerContent, document.body);
 }
 
+function PendingPoItemsDrawer({ open, loading, error, poNo = "", supplier = "", items = [], dateFrom = "", dateTo = "", onClose }) {
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose?.();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const rows = Array.isArray(items) ? items : [];
+
+  const drawerContent = (
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40 backdrop-blur-[1px]" onMouseDown={onClose}>
+      <aside
+        className="flex h-full w-full max-w-[calc(100vw-20px)] flex-col bg-white shadow-[0_0_40px_rgba(15,23,42,0.25)] transition-transform duration-300 ease-out sm:w-[56vw] md:w-[46vw] lg:w-[40vw] xl:w-[36vw]"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Pending PO</div>
+            <div className="mt-1 break-words text-sm font-semibold text-slate-900">{poNo ? `PO ${poNo}` : "Pending PO Items"}</div>
+            <div className="mt-1 text-xs text-slate-600">{`Date Range: ${dateFrom || "-"} to ${dateTo || "-"}`}</div>
+            {supplier ? <div className="mt-1 text-xs text-slate-600">Supplier: {supplier}</div> : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-700 transition hover:bg-slate-50"
+            aria-label="Close pending PO drawer"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {loading ? (
+            <div className="flex h-full min-h-[220px] items-center justify-center">
+              <div className="flex items-center gap-3 text-sm text-slate-600">
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-blue-600" />
+                Loading PO items...
+              </div>
+            </div>
+          ) : error ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>
+          ) : rows.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">
+              No pending items found for this purchase order.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {rows.map((item, index) => {
+                const fields = [
+                  { label: "PO Item", value: String(item?.poItem || "-") },
+                  { label: "Material", value: String(item?.material || "-") },
+                  { label: "Material Description", value: String(item?.materialDescription || "-") },
+                  { label: "PO Qty", value: String(item?.poQty || "0.000") },
+                  { label: "Delivered", value: String(item?.deliveredQty || "0.000") },
+                  { label: "Pending Qty", value: String(item?.pendingQty || "0.000") },
+                  { label: "Status", value: String(item?.status || "Pending") },
+                ];
+
+                return (
+                  <div
+                    key={`${item?.poItem || index}`}
+                    className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
+                  >
+                    <div className="border-b border-slate-200 bg-slate-950 px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                      Item {String(item?.poItem || index + 1)}
+                    </div>
+
+                    <table className="w-full border-collapse text-sm">
+                      <tbody>
+                        {fields.map((field) => (
+                          <tr key={`${item?.poItem || index}-${field.label}`} className="border-t border-slate-200 first:border-t-0">
+                            <th className="w-[42%] bg-slate-50 px-4 py-3 text-left align-top text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                              {field.label}
+                            </th>
+                            <td className={`px-4 py-3 align-top text-sm font-medium break-words whitespace-pre-wrap ${field.label === "Pending Qty" ? "text-blue-700" : "text-slate-900"}`}>
+                              {field.value}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+
+  if (typeof document === "undefined") {
+    return drawerContent;
+  }
+
+  return createPortal(drawerContent, document.body);
+}
+
 function formatFilterRangeText(value = "") {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -1006,6 +1119,8 @@ function buildSolmanListTableRows(rows = []) {
 
 const INITIAL_CR_BATCH_SIZE = 30;
 const LOAD_MORE_CR_BATCH_SIZE = 20;
+const INITIAL_PROCUREMENT_SECTION_BATCH_SIZE = 10;
+const LOAD_MORE_PROCUREMENT_SECTION_BATCH_SIZE = 10;
 
 function formatText(value = "") {
   return String(value || "").trim();
@@ -1025,6 +1140,181 @@ function readStoredSapContext() {
   } catch {
     return { systemId: "", sapUser: "" };
   }
+}
+
+function ProcurementSectionCard({ section, sectionIndex, visibleProcurementSectionRows, onLoadMoreRows, onSelectPoItem, selectedPoItem = "" }) {
+  const sectionTitle = String(section?.title || `Section ${sectionIndex + 1}`).trim();
+  const sectionTitleKey = sectionTitle.toLowerCase();
+  const isMaterialDocumentSection = sectionTitleKey.includes("material document");
+  const isPurchaseSummarySection = sectionTitleKey.includes("purchase document summary");
+  const rows = Array.isArray(section?.rows) ? section.rows : [];
+  const sectionKey = `${sectionTitleKey}-${sectionIndex}`;
+  const visibleRowCount = isMaterialDocumentSection
+    ? Number(visibleProcurementSectionRows?.[sectionKey] || INITIAL_PROCUREMENT_SECTION_BATCH_SIZE)
+    : rows.length;
+  const visibleRows = isMaterialDocumentSection ? rows.slice(0, visibleRowCount) : rows;
+  const hasMoreRows = isMaterialDocumentSection && rows.length > visibleRows.length;
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+      <div className="border-b border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-black">
+        {sectionTitle || `Section ${sectionIndex + 1}`}
+      </div>
+      <table className="w-full border-collapse text-sm">
+        <tbody>
+          {Array.isArray(section?.columns) && section.columns.length > 0 ? (
+            <>
+              <tr className="border-b border-slate-200 bg-slate-50/80">
+                {section.columns.map((column) => (
+                  <th
+                    key={column}
+                    className="px-4 py-3 text-left align-top text-[11px] bg-slate-950 font-semibold uppercase tracking-[0.16em] text-white"
+                  >
+                    {String(column || "-")}
+                  </th>
+                ))}
+              </tr>
+              {visibleRows.map((row, rowIndex) => (
+                <tr key={`${sectionIndex}-${rowIndex}`} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                  {section.columns.map((_, colIndex) => (
+                    <td
+                      key={`${sectionIndex}-${rowIndex}-${colIndex}`}
+                      className="px-4 py-3 align-top text-sm font-medium text-slate-900 break-words whitespace-pre-wrap"
+                    >
+                      {isPurchaseSummarySection && String(section.columns[colIndex] || "").trim().toLowerCase() === "po item" ? (
+                        (() => {
+                          const resolvedPoItem = String(Array.isArray(row) ? row[colIndex] : row?.[section.columns[colIndex]] ?? "").trim();
+                          const resolvedPoNumber = String(getProcurementCellValue(row, "PO Number")).trim();
+                          const isSelected = resolvedPoItem && resolvedPoItem === String(selectedPoItem || "").trim();
+
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => onSelectPoItem?.({ poItem: resolvedPoItem, poNumber: resolvedPoNumber, row })}
+                              className={`inline-flex items-center rounded-md border px-2 py-1 text-sm font-semibold underline decoration-1 underline-offset-2 transition ${isSelected ? "border-blue-700 bg-blue-700 text-white decoration-blue-200" : "border-blue-200 bg-blue-50 text-blue-700 decoration-blue-400 hover:bg-blue-100"}`}
+                            >
+                              {resolvedPoItem || "-"}
+                            </button>
+                          );
+                        })()
+                      ) : (
+                        String(Array.isArray(row) ? row[colIndex] : row?.[section.columns[colIndex]] ?? "-").trim() || "-"
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </>
+          ) : (
+            visibleRows.map((row, rowIndex) => (
+              <tr key={`${sectionIndex}-${rowIndex}`} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                <th className="w-[34%] bg-transparent px-4 py-3 text-left align-top text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {String(row?.field || "-")}
+                </th>
+                <td className="px-4 py-3 align-top text-sm font-medium text-slate-900 break-words whitespace-pre-wrap">
+                  {String(row?.value ?? "-").trim() || "-"}
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+
+      <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3">
+        <div className="text-xs text-slate-600">
+          Showing {visibleRows.length} of {rows.length} rows.
+        </div>
+
+        {hasMoreRows ? (
+          <button
+            type="button"
+            onClick={() => onLoadMoreRows?.(sectionKey)}
+            className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+          >
+            Show More
+          </button>
+        ) : <span className="text-xs text-slate-500">All rows shown.</span>}
+      </div>
+    </div>
+  );
+}
+
+function getProcurementCellValue(row, columnName) {
+  if (!row || !columnName) return "";
+
+  const normalizedColumn = String(columnName).trim().toLowerCase();
+  if (normalizedColumn === "po item") {
+    return String(Array.isArray(row) ? row[1] : row?.["PO Item"] ?? row?.PoItem ?? row?.poItem ?? "").trim();
+  }
+
+  if (normalizedColumn === "po number") {
+    return String(Array.isArray(row) ? row[0] : row?.["PO Number"] ?? row?.PoNo ?? row?.poNo ?? "").trim();
+  }
+
+  return String(Array.isArray(row) ? row : row?.[columnName] ?? "").trim();
+}
+
+function filterProcurementSectionsByPoItem(sections = [], poItem = "") {
+  const targetItem = String(poItem || "").trim();
+  if (!targetItem) return sections;
+
+  return (Array.isArray(sections) ? sections : []).map((section) => {
+    const sectionTitle = String(section?.title || "").trim().toLowerCase();
+    if (sectionTitle === "purchase document summary") {
+      return section;
+    }
+
+    const rows = Array.isArray(section?.rows) ? section.rows : [];
+    if (!rows.length) return section;
+
+    const hasPoItemColumn = Array.isArray(section?.columns)
+      ? section.columns.some((column) => String(column || "").trim().toLowerCase() === "po item")
+      : false;
+
+    if (!hasPoItemColumn) {
+      if (sectionTitle.includes("material document")) {
+        const firstMatch = rows.find((row) => String(row?.PoItem || row?.poItem || row?.PoItemNo || row?.po_item || "").trim() === targetItem);
+        return {
+          ...section,
+          rows: firstMatch ? [firstMatch] : rows,
+        };
+      }
+      return section;
+    }
+
+    if (sectionTitle.includes("invoice details")) {
+      const firstMatch = rows.find((row) => String(getProcurementCellValue(row, "PO Item")).trim() === targetItem);
+      return {
+        ...section,
+        rows: firstMatch ? [firstMatch] : rows,
+      };
+    }
+
+    return {
+      ...section,
+      rows: rows.filter((row) => String(getProcurementCellValue(row, "PO Item")).trim() === targetItem),
+    };
+  });
+}
+
+function mergeSummaryWithDetailSections({ baseSections = [], detailSections = [] } = {}) {
+  const baselineSections = Array.isArray(baseSections) ? baseSections : [];
+  const refreshedSections = Array.isArray(detailSections) ? detailSections : [];
+
+  const baseSummary = baselineSections.find(
+    (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+  ) || null;
+
+  const refreshedSummary = refreshedSections.find(
+    (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+  ) || null;
+
+  const detailOnlySections = refreshedSections.filter(
+    (section) => String(section?.title || "").trim().toLowerCase() !== "purchase document summary"
+  );
+
+  const finalSummary = baseSummary || refreshedSummary;
+  return finalSummary ? [finalSummary, ...detailOnlySections] : detailOnlySections;
 }
 
 export default function MessageBubble({
@@ -1063,6 +1353,37 @@ export default function MessageBubble({
     data?.viewType === "pending_invoice_status" && safeSummary && safeSummary === safeText;
   const safeSuggestions = Array.isArray(suggestions) ? suggestions : [];
   const isPendingInvoiceResponse = data?.viewType === "pending_invoice_status";
+  const isPendingPoListResponse = data?.viewType === "pending_po_list";
+  const pendingPoRequestContext = data?.requestContext && typeof data.requestContext === "object"
+    ? data.requestContext
+    : {};
+  const initialPendingPoRows = Array.isArray(data?.rows) ? data.rows : [];
+  const procurementSections = Array.isArray(data?.sections) ? data.sections : [];
+  const summarySection = procurementSections.find((section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary") || null;
+  const summaryRows = Array.isArray(summarySection?.rows) ? summarySection.rows : [];
+  const defaultProcurementPoItem = String(summaryRows[0]?.[1] || summaryRows[0]?.["PO Item"] || summaryRows[0]?.PoItem || summaryRows[0]?.poItem || "").trim();
+  const baseProcurementRequestContext = data?.procurementRequestContext && typeof data.procurementRequestContext === "object"
+    ? data.procurementRequestContext
+    : {};
+  const [selectedProcurementPoItem, setSelectedProcurementPoItem] = useState(defaultProcurementPoItem);
+  const [displayProcurementSections, setDisplayProcurementSections] = useState(procurementSections);
+  const [procurementDetailLoading, setProcurementDetailLoading] = useState(false);
+  const [procurementDetailError, setProcurementDetailError] = useState("");
+  const procurementDetailRequestRef = useRef(0);
+  const [pendingPoRows, setPendingPoRows] = useState(initialPendingPoRows);
+  const [pendingPoHasMore, setPendingPoHasMore] = useState(Boolean(data?.hasMore));
+  const [pendingPoNextPage, setPendingPoNextPage] = useState(data?.nextPage || null);
+  const [pendingPoLoadMoreLoading, setPendingPoLoadMoreLoading] = useState(false);
+  const [pendingPoLoadMoreError, setPendingPoLoadMoreError] = useState("");
+  const [pendingPoItemsDrawer, setPendingPoItemsDrawer] = useState({
+    open: false,
+    loading: false,
+    error: "",
+    poNo: "",
+    supplier: "",
+    items: [],
+  });
+  const pendingPoLoadMoreLockRef = useRef(false);
   const [isSmallScreen, setIsSmallScreen] = useState(false);
 
   useEffect(() => {
@@ -1095,6 +1416,33 @@ export default function MessageBubble({
     media.addListener(update);
     return () => media.removeListener(update);
   }, []);
+
+  useEffect(() => {
+    setSelectedProcurementPoItem(defaultProcurementPoItem);
+    setDisplayProcurementSections(procurementSections);
+    setProcurementDetailLoading(false);
+    setProcurementDetailError("");
+    procurementDetailRequestRef.current += 1;
+  }, [defaultProcurementPoItem, data?.viewType, data?.sections]);
+
+  useEffect(() => {
+    if (!isPendingPoListResponse) return;
+
+    setPendingPoRows(Array.isArray(data?.rows) ? data.rows : []);
+    setPendingPoHasMore(Boolean(data?.hasMore));
+    setPendingPoNextPage(data?.nextPage || null);
+    setPendingPoLoadMoreLoading(false);
+    setPendingPoLoadMoreError("");
+    pendingPoLoadMoreLockRef.current = false;
+    setPendingPoItemsDrawer({
+      open: false,
+      loading: false,
+      error: "",
+      poNo: "",
+      supplier: "",
+      items: [],
+    });
+  }, [data?.hasMore, data?.nextPage, data?.rows, data?.viewType, isPendingPoListResponse]);
 
   const tableSourceRows = useMemo(
     () =>
@@ -1133,21 +1481,35 @@ export default function MessageBubble({
     shortDescription: "",
     createdOn: "",
   });
+  const hasProcurementSections = Boolean(Array.isArray(procurementSections) && procurementSections.length > 0);
+  const renderedProcurementSections = useMemo(
+    () => (Array.isArray(displayProcurementSections) ? displayProcurementSections : []),
+    [displayProcurementSections]
+  );
   const [appliedSearch, setAppliedSearch] = useState({
     crNumber: "",
     shortDescription: "",
     createdOn: "",
   });
   const [visibleRecordCount, setVisibleRecordCount] = useState(INITIAL_CR_BATCH_SIZE);
+  const [visibleProcurementSectionRows, setVisibleProcurementSectionRows] = useState({});
 
   useEffect(() => {
     if (!isSolmanCollectionResponse) {
-      setAllCRRecords([]);
-      setSelectedStatus("");
-      setStatusDistribution(null);
-      setIsSearchOpen(false);
-      setSearchDraft({ crNumber: "", shortDescription: "", createdOn: "" });
-      setAppliedSearch({ crNumber: "", shortDescription: "", createdOn: "" });
+      setAllCRRecords((current) => (current.length ? [] : current));
+      setSelectedStatus((current) => (current ? "" : current));
+      setStatusDistribution((current) => (current ? null : current));
+      setIsSearchOpen((current) => (current ? false : current));
+      setSearchDraft((current) => (
+        current.crNumber || current.shortDescription || current.createdOn
+          ? { crNumber: "", shortDescription: "", createdOn: "" }
+          : current
+      ));
+      setAppliedSearch((current) => (
+        current.crNumber || current.shortDescription || current.createdOn
+          ? { crNumber: "", shortDescription: "", createdOn: "" }
+          : current
+      ));
       return;
     }
 
@@ -1159,12 +1521,40 @@ export default function MessageBubble({
           : buildRowsFromChartOrTable(data)
     );
 
-    setAllCRRecords(sourceRows);
-    setSelectedStatus("");
-    setStatusDistribution(isSolmanStatusResponse ? buildSolmanStatusDistribution(sourceRows) : null);
+    setAllCRRecords((current) => (current.length === sourceRows.length ? current : sourceRows));
+    setSelectedStatus((current) => (current ? "" : current));
+    setStatusDistribution((current) => {
+      const next = isSolmanStatusResponse ? buildSolmanStatusDistribution(sourceRows) : null;
+      return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+    });
 
-    setVisibleRecordCount(INITIAL_CR_BATCH_SIZE);
+    setVisibleRecordCount((current) => (current === INITIAL_CR_BATCH_SIZE ? current : INITIAL_CR_BATCH_SIZE));
   }, [data, isSolmanCollectionResponse, isSolmanStatusResponse]);
+
+  useEffect(() => {
+    if (!hasProcurementSections) {
+      setVisibleProcurementSectionRows((current) => (Object.keys(current).length ? {} : current));
+      return;
+    }
+
+    setVisibleProcurementSectionRows((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      procurementSections.forEach((section, sectionIndex) => {
+        const sectionTitle = String(section?.title || `section-${sectionIndex}`).trim().toLowerCase();
+        if (!sectionTitle.includes("material document")) return;
+
+        const sectionKey = `${sectionTitle}-${sectionIndex}`;
+        if (!Number.isFinite(Number(next[sectionKey]))) {
+          next[sectionKey] = INITIAL_PROCUREMENT_SECTION_BATCH_SIZE;
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [hasProcurementSections, procurementSections]);
 
   const statusFilteredRecords = useMemo(() => {
     if (!selectedStatus) return allCRRecords;
@@ -1318,6 +1708,114 @@ export default function MessageBubble({
   const handleLoadMoreRecords = useCallback(() => {
     setVisibleRecordCount((current) => current + LOAD_MORE_CR_BATCH_SIZE);
   }, []);
+
+  const handleLoadMoreProcurementSectionRows = useCallback((sectionKey) => {
+    setVisibleProcurementSectionRows((current) => ({
+      ...current,
+      [sectionKey]: Number(current?.[sectionKey] || INITIAL_PROCUREMENT_SECTION_BATCH_SIZE) + LOAD_MORE_PROCUREMENT_SECTION_BATCH_SIZE,
+    }));
+  }, []);
+
+  const handleSelectProcurementPoItem = useCallback(async (selection) => {
+    const selectedPoItem = String(selection?.poItem || "").trim();
+    const selectedPoNumber = String(selection?.poNumber || "").trim();
+
+    if (!selectedPoItem || !selectedPoNumber) return;
+
+    const fallbackContext = readStoredSapContext();
+    const effectiveSystemId = String(
+      baseProcurementRequestContext?.systemId ||
+      data?.systemId ||
+      data?.result?.systemId ||
+      systemId ||
+      fallbackContext?.systemId ||
+      ""
+    ).trim();
+    const effectiveSapUser = String(
+      baseProcurementRequestContext?.sapUser ||
+      data?.sapUser ||
+      data?.result?.sapUser ||
+      sapUser ||
+      fallbackContext?.sapUser ||
+      ""
+    ).trim();
+
+    if (!effectiveSystemId || !effectiveSapUser) {
+      setSelectedProcurementPoItem(selectedPoItem);
+      setDisplayProcurementSections(() => {
+        const summary = (Array.isArray(procurementSections) ? procurementSections : []).find(
+          (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+        );
+        return summary ? [summary] : [];
+      });
+      setProcurementDetailError("Active SAP context is required to load PO item details.");
+      setProcurementDetailLoading(false);
+      return;
+    }
+
+    const requestId = procurementDetailRequestRef.current + 1;
+    procurementDetailRequestRef.current = requestId;
+
+    setSelectedProcurementPoItem(selectedPoItem);
+    setProcurementDetailError("");
+    setProcurementDetailLoading(true);
+    setDisplayProcurementSections(() => {
+      const summary = (Array.isArray(displayProcurementSections) ? displayProcurementSections : []).find(
+        (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+      ) || (Array.isArray(procurementSections) ? procurementSections : []).find(
+        (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+      );
+      return summary ? [summary] : [];
+    });
+
+    try {
+      const response = await getProcurementFlowDetailsByItem({
+        systemId: effectiveSystemId,
+        sapUser: effectiveSapUser,
+        purchaseOrderId: selectedPoNumber,
+        purchaseOrderItem: selectedPoItem,
+        query: String(baseProcurementRequestContext?.query || "").trim(),
+        businessScope: String(baseProcurementRequestContext?.businessScope || "").trim(),
+        cursor: baseProcurementRequestContext?.cursor ?? null,
+        pendingAction: baseProcurementRequestContext?.pendingAction || null,
+        availableSystems: Array.isArray(baseProcurementRequestContext?.availableSystems)
+          ? baseProcurementRequestContext.availableSystems
+          : null,
+        documentFlowIntent: String(baseProcurementRequestContext?.documentFlowIntent || "").trim(),
+      });
+
+      if (procurementDetailRequestRef.current !== requestId) return;
+
+      const resultData = response?.result || response;
+      const nextSections = Array.isArray(resultData?.sections) ? resultData.sections : [];
+      setDisplayProcurementSections((currentSections) =>
+        mergeSummaryWithDetailSections({
+          baseSections:
+            Array.isArray(currentSections) && currentSections.length > 0
+              ? currentSections
+              : procurementSections,
+          detailSections: nextSections,
+        })
+      );
+      setProcurementDetailError("");
+    } catch (error) {
+      if (procurementDetailRequestRef.current !== requestId) return;
+
+      setDisplayProcurementSections(() => {
+        const summary = (Array.isArray(procurementSections) ? procurementSections : []).find(
+          (section) => String(section?.title || "").trim().toLowerCase() === "purchase document summary"
+        );
+        return summary ? [summary] : [];
+      });
+      setProcurementDetailError(
+        String(error?.message || "Failed to load selected PO item details.").trim() || "Failed to load selected PO item details."
+      );
+    } finally {
+      if (procurementDetailRequestRef.current === requestId) {
+        setProcurementDetailLoading(false);
+      }
+    }
+  }, [baseProcurementRequestContext, data?.result?.sapUser, data?.result?.systemId, data?.sapUser, data?.systemId, displayProcurementSections, procurementSections, sapUser, systemId]);
 
   const handleOpenTransportDrawer = useCallback(
     async (changeRequestIdOrRow) => {
@@ -1518,6 +2016,181 @@ export default function MessageBubble({
   const handleClosePoDrawer = useCallback(() => {
     setPoDrawer((current) => ({ ...current, open: false }));
   }, []);
+
+  const handleClosePendingPoItemsDrawer = useCallback(() => {
+    setPendingPoItemsDrawer((current) => ({ ...current, open: false }));
+  }, []);
+
+  const handleLoadMorePendingPos = useCallback(async () => {
+    if (pendingPoLoadMoreLockRef.current || pendingPoLoadMoreLoading || !pendingPoHasMore) {
+      return;
+    }
+
+    const fallbackContext = readStoredSapContext();
+    const effectiveSystemId = String(
+      pendingPoRequestContext?.systemId ||
+      data?.systemId ||
+      data?.result?.systemId ||
+      systemId ||
+      fallbackContext?.systemId ||
+      ""
+    ).trim();
+    const effectiveSapUser = String(
+      pendingPoRequestContext?.sapUser ||
+      data?.sapUser ||
+      data?.result?.sapUser ||
+      sapUser ||
+      fallbackContext?.sapUser ||
+      ""
+    ).trim();
+    const effectiveDateFrom = String(pendingPoRequestContext?.dateFrom || data?.dateFrom || "").trim();
+    const effectiveDateTo = String(pendingPoRequestContext?.dateTo || data?.dateTo || "").trim();
+    const effectivePoNo = String(pendingPoRequestContext?.poNo || data?.poNo || "").trim();
+    const effectivePageSize = Number(pendingPoRequestContext?.pageSize || data?.pageSize || 30) || 30;
+
+    if (!effectiveSystemId || !effectiveSapUser || !effectiveDateFrom || !effectiveDateTo) {
+      setPendingPoLoadMoreError("Unable to retrieve pending purchase orders. Please try again.");
+      return;
+    }
+
+    pendingPoLoadMoreLockRef.current = true;
+    setPendingPoLoadMoreLoading(true);
+    setPendingPoLoadMoreError("");
+
+    try {
+      const payload = await getPendingPurchaseOrders({
+        systemId: effectiveSystemId,
+        sapUser: effectiveSapUser,
+        dateFrom: effectiveDateFrom,
+        dateTo: effectiveDateTo,
+        poNo: effectivePoNo,
+        pageSize: effectivePageSize,
+        cursor: pendingPoNextPage,
+      });
+
+      const resultData = payload?.result || payload;
+      const incomingRows = Array.isArray(resultData?.rows) ? resultData.rows : [];
+
+      setPendingPoRows((current) => {
+        const merged = new Map((Array.isArray(current) ? current : []).map((row) => [String(row?.poNo || "").trim(), row]));
+        for (const row of incomingRows) {
+          const key = String(row?.poNo || "").trim();
+          if (!key) continue;
+          merged.set(key, row);
+        }
+        return Array.from(merged.values());
+      });
+
+      setPendingPoHasMore(Boolean(resultData?.hasMore));
+      setPendingPoNextPage(resultData?.nextPage || null);
+    } catch {
+      setPendingPoLoadMoreError("Unable to retrieve pending purchase orders. Please try again.");
+    } finally {
+      pendingPoLoadMoreLockRef.current = false;
+      setPendingPoLoadMoreLoading(false);
+    }
+  }, [data?.dateFrom, data?.dateTo, data?.pageSize, data?.poNo, data?.result?.sapUser, data?.result?.systemId, data?.sapUser, data?.systemId, pendingPoHasMore, pendingPoLoadMoreLoading, pendingPoNextPage, pendingPoRequestContext?.dateFrom, pendingPoRequestContext?.dateTo, pendingPoRequestContext?.pageSize, pendingPoRequestContext?.poNo, pendingPoRequestContext?.sapUser, pendingPoRequestContext?.systemId, sapUser, systemId]);
+
+  const handleOpenPendingPoItems = useCallback(async (row) => {
+    const poNo = String(row?.poNo || row?.PO_NO || row?.PoNo || "").trim();
+    if (!poNo) return;
+
+    const fallbackContext = readStoredSapContext();
+    const effectiveSystemId = String(
+      pendingPoRequestContext?.systemId ||
+      data?.systemId ||
+      data?.result?.systemId ||
+      systemId ||
+      fallbackContext?.systemId ||
+      ""
+    ).trim();
+    const effectiveSapUser = String(
+      pendingPoRequestContext?.sapUser ||
+      data?.sapUser ||
+      data?.result?.sapUser ||
+      sapUser ||
+      fallbackContext?.sapUser ||
+      ""
+    ).trim();
+    const effectiveDateFrom = String(pendingPoRequestContext?.dateFrom || data?.dateFrom || "").trim();
+    const effectiveDateTo = String(pendingPoRequestContext?.dateTo || data?.dateTo || "").trim();
+
+    setPendingPoItemsDrawer({
+      open: true,
+      loading: true,
+      error: "",
+      poNo,
+      supplier: String(row?.supplier || "").trim(),
+      items: [],
+    });
+
+    if (!effectiveSystemId || !effectiveSapUser) {
+      setPendingPoItemsDrawer({
+        open: true,
+        loading: false,
+        error: "Unable to load items for this PO. Please try again.",
+        poNo,
+        supplier: String(row?.supplier || "").trim(),
+        items: [],
+      });
+      return;
+    }
+
+    try {
+      const payload = await getPendingPurchaseOrderItems({
+        systemId: effectiveSystemId,
+        sapUser: effectiveSapUser,
+        poNo,
+        dateFrom: effectiveDateFrom,
+        dateTo: effectiveDateTo,
+      });
+
+      const resultData = payload?.result || payload;
+      const items = Array.isArray(resultData?.items) ? resultData.items : [];
+
+      setPendingPoItemsDrawer({
+        open: true,
+        loading: false,
+        error: "",
+        poNo,
+        supplier: String(row?.supplier || "").trim(),
+        items,
+      });
+    } catch {
+      setPendingPoItemsDrawer({
+        open: true,
+        loading: false,
+        error: "Unable to load items for this PO. Please try again.",
+        poNo,
+        supplier: String(row?.supplier || "").trim(),
+        items: [],
+      });
+    }
+  }, [data?.dateFrom, data?.dateTo, data?.result?.sapUser, data?.result?.systemId, data?.sapUser, data?.systemId, pendingPoRequestContext?.dateFrom, pendingPoRequestContext?.dateTo, pendingPoRequestContext?.sapUser, pendingPoRequestContext?.systemId, sapUser, systemId]);
+
+  const renderPendingPoNoCell = useCallback(
+    ({ value, column, row, rowIndex }) => {
+      if (String(column || "").trim().toLowerCase() !== "po no.") return null;
+
+      const poNo = String(value || row?.poNo || "").trim();
+      if (!poNo || poNo === "-") return null;
+      const sourceRow = (row && typeof row === "object" && !Array.isArray(row))
+        ? row
+        : (Array.isArray(pendingPoRows) ? pendingPoRows[Number(rowIndex)] : null) || { poNo };
+
+      return (
+        <button
+          type="button"
+          onClick={() => handleOpenPendingPoItems(sourceRow)}
+          className="text-blue-600 underline decoration-blue-400 decoration-1 underline-offset-2 transition hover:text-blue-800"
+          title={`Open pending items for PO ${poNo}`}
+        >
+          {poNo}
+        </button>
+      );
+    },
+    [handleOpenPendingPoItems, pendingPoRows]
+  );
 
   const renderCrNumberCell = useCallback(
     ({ value, column, row, rowIndex }) => {
@@ -1785,72 +2458,62 @@ export default function MessageBubble({
                   </button>
                 </div>
               </div>
-            ) : null}
-
-            {emptyTableMessage ? (
-              <div className="px-4 py-6 text-sm text-slate-700">
-                {emptyTableMessage}
-              </div>
-            ) : (
+            ) : hasTable ? (
               <>
-                <ReplyTable
-                  columns={tableColumns}
-                  rows={tableRows}
-                  forceGrid={true}
-                  renderCell={renderCrNumberCell}
-                />
-
-                <div className="flex flex-col gap-2 border-t border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="text-xs text-slate-600">
-                    {hasMoreRecords
-                      ? `${visibleCRRecords.length} of ${searchFilteredRecords.length} loaded`
-                      : "No more records found."}
+                {isCapped && (
+                  <div className="px-4 pt-3 text-xs text-slate-600">
+                    Showing {cappedTo} of {totalRows} rows.
+                    Refine your query (or use top 10).
                   </div>
+                )}
 
-                  {hasMoreRecords ? (
-                    <button
-                      type="button"
-                      onClick={handleLoadMoreRecords}
-                      className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={!hasMoreRecords}
-                    >
-                      Show More
-                    </button>
-                  ) : null}
-                </div>
+                <ReplyTable
+                  columns={table.columns}
+                  rows={table.rows}
+                  forceGrid={Boolean(table?.forceGrid || data?.viewType === "transport_list_table")}
+                  renderCell={renderPoNumberCell}
+                />
               </>
+            ) : (
+              <div className="whitespace-pre-wrap break-words leading-relaxed">
+                {formattedText}
+              </div>
             )}
           </div>
 
-          {safeSuggestions.length > 0 && (
-            <div className="mt-3 ml-2 sm:ml-4 flex flex-wrap gap-2">
-              {safeSuggestions.map((suggestion, idx) => {
-                const label = getSuggestionLabel(suggestion);
-                if (!label) return null;
+          {genericChartView?.normalized ? (
+            <div className="mt-3 overflow-hidden rounded-[18px] rounded-tl-sm border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+              <div className="border-b border-slate-200 px-4 py-3">
+                <div className="text-sm font-semibold text-slate-900">
+                  {genericChartView.normalized.title}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {genericChartView.normalized.totalCRs} change request(s)
+                </div>
+              </div>
 
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => onSuggestionClick?.(suggestion)}
-                    className="px-3 sm:px-4 py-1.5 text-xs bg-white text-black border border-dashed border-green-700 rounded-full transition hover:bg-green-50"
-                  >
-                    {label}
-                  </button>
-                );
-              })}
+              <div className="h-[18rem] sm:h-[22rem] w-full px-1 pb-1 pt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart margin={{ top: 0, right: 10, bottom: 0, left: 10 }}>
+                    <Pie
+                      data={genericChartView.normalized.data}
+                      dataKey="count"
+                      nameKey="status"
+                      innerRadius={isSmallScreen ? 40 : 54}
+                      outerRadius={isSmallScreen ? 66 : 82}
+                      paddingAngle={3}
+                      label={renderPieSliceLabel}
+                      labelLine={false}
+                    >
+                      {genericChartView.normalized.data.map((entry, idx) => (
+                        <Cell key={`generic-cell-${entry.status}-${idx}`} fill={entry.color || "#64748b"} />
+                      ))}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          )}
-
-          <TransportDrawer
-            open={transportDrawer.open}
-            title={transportDrawer.title}
-            status={transportDrawer.status}
-            loading={transportDrawer.loading}
-            error={transportDrawer.error}
-            transports={transportDrawer.transports}
-            onClose={handleCloseTransportDrawer}
-          />
+          ) : null}
         </div>
       </div>
     );
@@ -2016,6 +2679,94 @@ export default function MessageBubble({
     );
   }
 
+  if (isPendingPoListResponse) {
+    const tableColumns = ["PO No.", "Supplier", "PO Qty", "Delivered", "Pending Qty", "Status"];
+    const tableRows = (Array.isArray(pendingPoRows) ? pendingPoRows : []).map((row) => [
+      String(row?.poNo || "-").trim() || "-",
+      String(row?.supplier || "-").trim() || "-",
+      String(row?.poQty || "0.000").trim() || "0.000",
+      String(row?.deliveredQty || "0.000").trim() || "0.000",
+      String(row?.pendingQty || "0.000").trim() || "0.000",
+      String(row?.status || "Pending").trim() || "Pending",
+    ]);
+    const hasRows = tableRows.length > 0;
+
+    return (
+      <div className="flex items-start justify-start gap-3 w-full">
+        <Avatar role={role} showAvatar={showAvatar} />
+
+        <div className="max-w-[95%] sm:max-w-full min-w-0 overflow-hidden space-y-2">
+          {safeSummary ? (
+            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-900">{safeSummary}</div>
+          ) : null}
+
+          <div className="overflow-hidden rounded-[18px] rounded-tl-sm border border-blue-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+            <div className="border-b border-blue-100 bg-gradient-to-r from-blue-50 to-white px-4 py-3">
+              <div className="text-sm font-semibold text-slate-900">Pending Purchase Orders</div>
+              <div className="mt-1 text-xs text-slate-600">
+                {`Date Range: ${String(data?.dateFrom || pendingPoRequestContext?.dateFrom || "-")} to ${String(data?.dateTo || pendingPoRequestContext?.dateTo || "-")}`}
+              </div>
+            </div>
+
+            {!hasRows ? (
+              <div className="px-4 py-6 text-sm text-slate-700">No pending purchase orders found for the selected period.</div>
+            ) : (
+              <ReplyTable
+                columns={tableColumns}
+                rows={tableRows}
+                forceGrid={true}
+                renderCell={renderPendingPoNoCell}
+              />
+            )}
+
+            {Array.isArray(data?.dataQualityIssues) && data.dataQualityIssues.length > 0 ? (
+              <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                {data.dataQualityIssues[0]?.message || "Data inconsistency detected in supplier details for one or more POs."}
+              </div>
+            ) : null}
+
+            {pendingPoLoadMoreError ? (
+              <div className="border-t border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{pendingPoLoadMoreError}</div>
+            ) : null}
+
+            <div className="flex flex-col gap-2 border-t border-blue-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-xs text-slate-600">
+                {pendingPoLoadMoreLoading
+                  ? "Loading more POs..."
+                  : pendingPoHasMore
+                    ? `${tableRows.length} pending PO(s) loaded`
+                    : "No more records found."}
+              </div>
+
+              {pendingPoHasMore ? (
+                <button
+                  type="button"
+                  onClick={handleLoadMorePendingPos}
+                  disabled={pendingPoLoadMoreLoading}
+                  className="inline-flex items-center justify-center rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {pendingPoLoadMoreLoading ? "Loading more POs..." : "Load More"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <PendingPoItemsDrawer
+            open={pendingPoItemsDrawer.open}
+            loading={pendingPoItemsDrawer.loading}
+            error={pendingPoItemsDrawer.error}
+            poNo={pendingPoItemsDrawer.poNo}
+            supplier={pendingPoItemsDrawer.supplier}
+            items={pendingPoItemsDrawer.items}
+            dateFrom={String(data?.dateFrom || pendingPoRequestContext?.dateFrom || "")}
+            dateTo={String(data?.dateTo || pendingPoRequestContext?.dateTo || "")}
+            onClose={handleClosePendingPoItemsDrawer}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (isSolmanCreateCrSuccess) {
     const fields = buildCreateCrSuccessFields(data);
     const createdCrNumber = String(data?.changeRequestId || "-").trim() || "-";
@@ -2093,7 +2844,6 @@ export default function MessageBubble({
   }
 
   const hasTable = Boolean(table?.columns && table?.rows);
-
   const totalRows = Number(table?._meta?.totalRows || 0);
   const cappedTo = Number(table?._meta?.cappedTo || 0);
 
@@ -2168,10 +2918,36 @@ export default function MessageBubble({
           className={
             hasTable
               ? "overflow-hidden rounded-[18px] rounded-tl-sm bg-white text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.08)] border border-slate-200"
-              : "overflow-hidden rounded-[18px] rounded-tl-sm bg-white px-4 py-3 text-sm text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.08)] border border-slate-200"
+              : "overflow-hidden rounded-[18px] rounded-tl-sm bg-white text-sm text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.08)] border border-slate-200"
           }
         >
-          {hasTable ? (
+          {hasProcurementSections ? (
+            <div className="space-y-4 p-2 sm:p-3">
+              {procurementDetailError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                  {procurementDetailError}
+                </div>
+              ) : null}
+
+              {procurementDetailLoading ? (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800">
+                  Loading selected PO item details...
+                </div>
+              ) : null}
+
+              {renderedProcurementSections.map((section, sectionIndex) => (
+                <ProcurementSectionCard
+                  key={`${section?.title || "section"}-${sectionIndex}`}
+                  section={section}
+                  sectionIndex={sectionIndex}
+                  visibleProcurementSectionRows={visibleProcurementSectionRows}
+                  onLoadMoreRows={handleLoadMoreProcurementSectionRows}
+                  onSelectPoItem={handleSelectProcurementPoItem}
+                  selectedPoItem={selectedProcurementPoItem}
+                />
+              ))}
+            </div>
+          ) : hasTable ? (
             <>
               {isCapped && (
                 <div className="px-4 pt-3 text-xs text-slate-600">

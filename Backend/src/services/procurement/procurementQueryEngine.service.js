@@ -444,7 +444,7 @@ function detectDocumentFlowIntent(query) {
   if (!text) return null;
   if (/\b(material document|material documents|material movement|goods movement|movement type|mat doc|material ledger)\b/i.test(text)) return "MATERIAL_DOCUMENT";
   if (/\b(invoice details|invoice information|invoice document|show invoice for po|show invoice for the po|invoice for the po)\b/i.test(text)) return "INVOICE_DETAILS";
-  if (/\b(accounting document|accounting doc|fi document)\b/i.test(text)) return "ACCOUNTING_DOCUMENT";
+  if (/\b(accounting document|accounting doc|account details|account detail|show account details|fi document)\b/i.test(text)) return "ACCOUNTING_DOCUMENT";
   if (/\b(complete flow|document flow|lifecycle|end to end)\b/i.test(text)) return "COMPLETE_DOCUMENT_FLOW";
   return null;
 }

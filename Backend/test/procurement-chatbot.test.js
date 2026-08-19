@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildPendingInvoiceStatusReply, buildProcurementFlowReply } from "../src/controllers/stream/s4po.stream.controller.js";
+import {
+  buildPendingInvoiceStatusReply,
+  buildPendingInvoiceStatusSections,
+  buildProcurementFlowReply,
+  detectPendingInvoiceIntent,
+} from "../src/controllers/stream/s4po.stream.controller.js";
 import { extractQuantityValue } from "../src/services/sap/sapValueExtractor.service.js";
 import { getProcurementCdsRegistry, planProcurementChatQuery } from "../src/services/procurement/purchaseOrderChatbot.service.js";
 import { detectDocumentFlowIntent, getDocumentFlowExecutionPlan, isPurchaseOrderFlowRequest } from "../src/services/procurement/procurementQueryEngine.service.js";
@@ -68,10 +73,23 @@ test("pending invoice intent is detected before generic PO detail routing", () =
   }
 });
 
+test("pending invoice intent matcher supports common invoice typos", () => {
+  const typoPrompts = [
+    "show pending invocie for the po 4500000001",
+    "pending invocie status for purchase order 4500000001",
+    "remaining quantity to invocie for po 4500000001",
+  ];
+
+  for (const prompt of typoPrompts) {
+    assert.equal(detectPendingInvoiceIntent(prompt), "PENDING_INVOICE_STATUS");
+  }
+});
+
 test("document flow intent wins over generic PO detail wording", () => {
   assert.equal(detectDocumentFlowIntent("Show material document details for PO 4500000001"), "MATERIAL_DOCUMENT");
   assert.equal(detectDocumentFlowIntent("Show invoice details for PO 4500000001"), "INVOICE_DETAILS");
   assert.equal(detectDocumentFlowIntent("Show invoice for the PO 4500000001"), "INVOICE_DETAILS");
+  assert.equal(detectDocumentFlowIntent("Show account details for PO 4500000001"), "ACCOUNTING_DOCUMENT");
   assert.equal(detectDocumentFlowIntent("Find accounting document for PO 4500000001"), "ACCOUNTING_DOCUMENT");
   assert.equal(detectDocumentFlowIntent("Show complete document flow for PO 4500000001"), "COMPLETE_DOCUMENT_FLOW");
 });
@@ -102,6 +120,7 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
   };
 
   const materialReply = buildProcurementFlowReply({ ...sample, documentFlowIntent: "MATERIAL_DOCUMENT" });
+  assert.match(materialReply, /\| Field \| Value \|/);
   assert.match(materialReply, /Purchase Document Summary/);
   assert.match(materialReply, /Material Document/);
   assert.doesNotMatch(materialReply, /Invoice Details/);
@@ -109,6 +128,7 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
   assert.doesNotMatch(materialReply, /Accounting Details/);
 
   const invoiceReply = buildProcurementFlowReply({ ...sample, documentFlowIntent: "INVOICE_DETAILS" });
+  assert.match(invoiceReply, /\| Field \| Value \|/);
   assert.match(invoiceReply, /Purchase Document Summary/);
   assert.match(invoiceReply, /Invoice Details/);
   assert.match(invoiceReply, /Invoice Header/);
@@ -116,6 +136,7 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
   assert.doesNotMatch(invoiceReply, /Accounting Details/);
 
   const accountingReply = buildProcurementFlowReply({ ...sample, documentFlowIntent: "ACCOUNTING_DOCUMENT" });
+  assert.match(accountingReply, /\| Field \| Value \|/);
   assert.match(accountingReply, /Purchase Document Summary/);
   assert.match(accountingReply, /Accounting Details/);
   assert.doesNotMatch(accountingReply, /Material Document/);
@@ -123,6 +144,7 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
   assert.doesNotMatch(accountingReply, /Invoice Header/);
 
   const completeReply = buildProcurementFlowReply({ ...sample, documentFlowIntent: "COMPLETE_DOCUMENT_FLOW" });
+  assert.match(completeReply, /\| Field \| Value \|/);
   assert.match(completeReply, /Purchase Document Summary/);
   assert.match(completeReply, /Material Document/);
   assert.match(completeReply, /Invoice Details/);
@@ -152,6 +174,37 @@ test("pending invoice formatter reports only pending status fields", () => {
   assert.doesNotMatch(reply, /Material Document/);
   assert.doesNotMatch(reply, /Invoice Header/);
   assert.doesNotMatch(reply, /Accounting Details/);
+});
+
+test("pending invoice sections expose a horizontal table payload", () => {
+  const sections = buildPendingInvoiceStatusSections({
+    poRow: { PoNo: "4500000006", PoItem: "00015", PO_Quantity: "146.000", MatNo: "MZ-RM-R100-05" },
+    rsegRows: [{ quantity: "146.000" }],
+    poNo: "4500000006",
+    poItem: "00015",
+  });
+
+  assert.ok(Array.isArray(sections));
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].title, "Pending Invoice Status");
+  assert.deepEqual(sections[0].columns, [
+    "PO Number",
+    "PO Item",
+    "Material",
+    "Ordered Quantity",
+    "Invoiced Quantity",
+    "Pending Quantity",
+    "Invoice Status",
+  ]);
+  assert.deepEqual(sections[0].rows[0], [
+    "4500000006",
+    "00015",
+    "MZ-RM-R100-05",
+    "146.000",
+    "146.000",
+    "0.000",
+    "Completed",
+  ]);
 });
 
 test("pending invoice formatter uses PO_Quantity and does not fall back to zero when present", () => {

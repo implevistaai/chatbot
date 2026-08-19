@@ -11,6 +11,9 @@ import {
   listSolmanTransports,
   checkSolmanTransportDependencies,
   getPurchaseOrderDetailsAction,
+  getProcurementFlowDetailsByItemAction,
+  getPendingPurchaseOrderItemsAction,
+  getPendingPurchaseOrdersAction,
 } from "../controllers/chat.actions.controller.js";
 import { sendChatReportEmail } from "../controllers/chat.email.controller.js";
 
@@ -70,6 +73,21 @@ chatRoutes.post(
 chatRoutes.post(
   "/actions/s4hana/get-purchase-order-details",
   getPurchaseOrderDetailsAction
+);
+
+chatRoutes.post(
+  "/actions/s4hana/get-procurement-flow-details-by-item",
+  getProcurementFlowDetailsByItemAction
+);
+
+chatRoutes.post(
+  "/actions/s4hana/get-pending-purchase-orders",
+  getPendingPurchaseOrdersAction
+);
+
+chatRoutes.post(
+  "/actions/s4hana/get-pending-purchase-order-items",
+  getPendingPurchaseOrderItemsAction
 );
 
 chatRoutes.post("/email", sendChatReportEmail);

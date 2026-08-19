@@ -10,6 +10,17 @@ import { getDependentTransportsFromCr, getTransportNumbersFromCr } from "../serv
 import { createTransportRequest } from "../services/systems/solman/transportRequest.service.js";
 import { postToSap } from "../services/sap/sapWrite.service.js";
 import { persistAssistantAndTouchSession } from "./stream/solman/solman.shared.js";
+import { executePurchaseOrderFlow } from "../services/procurement/purchaseOrderFlow.service.js";
+import { detectDocumentFlowIntent } from "../services/procurement/procurementQueryEngine.service.js";
+import {
+  assertPendingPoServiceCompatibility,
+  getPendingPurchaseOrderItems,
+  getPendingPurchaseOrderList,
+  PENDING_PO_ENTITY_SET,
+  PENDING_PO_SERVICE_NAME,
+} from "../services/procurement/pendingPurchaseOrder.service.js";
+import { SapServiceMap } from "../models/SapServiceMap.model.js";
+import { getAllowedFieldsWithLabels } from "../services/allowlist.service.js";
 
 function cleanString(v) {
   return String(v || "").trim();
@@ -147,6 +158,233 @@ function validateGetPurchaseOrderDetailsInput(body) {
   }
 
   return null;
+}
+
+function validateGetProcurementFlowDetailsByItemInput(body) {
+  if (!cleanString(body?.systemId)) {
+    return "systemId is required.";
+  }
+
+  if (!cleanString(body?.sapUser)) {
+    return "sapUser is required.";
+  }
+
+  if (!cleanString(body?.purchaseOrderId)) {
+    return "purchaseOrderId is required.";
+  }
+
+  if (!cleanString(body?.purchaseOrderItem)) {
+    return "purchaseOrderItem is required.";
+  }
+
+  return null;
+}
+
+function validateGetPendingPurchaseOrdersInput(body) {
+  if (!cleanString(body?.systemId)) {
+    return "systemId is required.";
+  }
+
+  if (!cleanString(body?.sapUser)) {
+    return "sapUser is required.";
+  }
+
+  const poNo = cleanString(body?.poNo);
+
+  if (!cleanString(body?.dateFrom) && !poNo) {
+    return "dateFrom is required.";
+  }
+
+  if (!cleanString(body?.dateTo) && !poNo) {
+    return "dateTo is required.";
+  }
+
+  return null;
+}
+
+function validateGetPendingPurchaseOrderItemsInput(body) {
+  if (!cleanString(body?.systemId)) {
+    return "systemId is required.";
+  }
+
+  if (!cleanString(body?.sapUser)) {
+    return "sapUser is required.";
+  }
+
+  if (!cleanString(body?.poNo)) {
+    return "poNo is required.";
+  }
+
+  return null;
+}
+
+function resolvePendingPoServiceMap(catalogs = [], fallbackSystemId = "") {
+  const rows = Array.isArray(catalogs) ? catalogs : [];
+
+  const preferred = rows.find((catalog) => {
+    const serviceName = cleanString(catalog?.serviceName).toUpperCase();
+    const entitySet = cleanString(catalog?.entitySet).toUpperCase();
+    return serviceName === PENDING_PO_SERVICE_NAME || entitySet === PENDING_PO_ENTITY_SET;
+  });
+  if (preferred) return preferred;
+
+  return null;
+}
+
+function inferEntityTypeName(service = {}) {
+  const explicit = cleanString(service?.entityTypeName);
+  if (explicit) return explicit;
+  const entitySet = cleanString(service?.entitySet);
+  if (!entitySet) return "";
+  return entitySet.replace(/Set$/i, "");
+}
+
+function hasRequiredPendingPoFields(fields = []) {
+  const normalize = (value) => cleanString(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const set = new Set((Array.isArray(fields) ? fields : []).map((f) => normalize(f)));
+
+  const hasAny = (candidates) => candidates.some((name) => set.has(normalize(name)));
+
+  const hasPoNo = hasAny(["po_no", "PoNo", "EBELN"]);
+  const hasPoItem = hasAny(["po_item", "PoItem", "EBELP"]);
+  const hasDate = hasAny(["po_doc_date", "PoDocDate", "CrtDate", "BEDAT"]);
+  const hasDirectPending = hasAny(["Pending_PO_Quantity", "pending_qty", "PendingQty"]);
+  const hasOrdered = hasAny(["PO_Quantity", "PoQuantity", "Menge"]);
+  const hasDelivered = hasAny(["Delivered", "delivered_qty", "Wemng"]);
+
+  return hasPoNo && hasPoItem && hasDate && (hasDirectPending || (hasOrdered && hasDelivered));
+}
+
+async function resolveCompatiblePendingPoService({ catalogs = [], system, sapAuth }) {
+  const preferred = resolvePendingPoServiceMap(catalogs, system?.systemId || "");
+  const ordered = preferred
+    ? [preferred, ...catalogs.filter((row) => row !== preferred)]
+    : catalogs;
+
+  for (const candidate of ordered) {
+    if (!cleanString(candidate?.serviceName) || !cleanString(candidate?.entitySet)) continue;
+
+    try {
+      const { fields } = await getAllowedFieldsWithLabels({
+        system,
+        service: candidate,
+        entityTypeName: inferEntityTypeName(candidate),
+        authOverride: sapAuth,
+      });
+
+      if (hasRequiredPendingPoFields(fields)) {
+        return {
+          ...candidate,
+          pendingPoFields: fields,
+        };
+      }
+    } catch {
+      // Ignore one candidate failing metadata fetch and continue probing.
+    }
+  }
+
+  return null;
+}
+
+function cleanText(value, fallback = "NULL") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function buildProcurementFlowSections({
+  poRows = [],
+  materialRows = [],
+  invoiceRows = [],
+  rbkpRows = [],
+  acdocaRows = [],
+  poNo = "NULL",
+  poItem = "NULL",
+  documentFlowIntent = "COMPLETE_DOCUMENT_FLOW",
+} = {}) {
+  const primary = Array.isArray(poRows) ? poRows[0] || {} : {};
+
+  const normalizedIntent = String(documentFlowIntent || "COMPLETE_DOCUMENT_FLOW").trim().toUpperCase();
+  const allowMaterial = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "MATERIAL_DOCUMENT";
+  const allowInvoice = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "INVOICE_DETAILS";
+  const allowAccounting = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "ACCOUNTING_DOCUMENT";
+
+  const sections = [
+    {
+      title: "Purchase Document Summary",
+      columns: ["PO Number", "PO Item", "Material Number", "Quantity"],
+      rows: (Array.isArray(poRows) && poRows.length > 0 ? poRows : [primary]).map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.MatNo || row?.MaterialNumber || row?.Material || row?.material_no),
+        cleanText(row?.PO_Quantity || row?.PoQuantity || row?.Menge || row?.Quantity || row?.TotalPoQuantity),
+      ]),
+    },
+  ];
+
+  if (allowMaterial && materialRows.length > 0) {
+    sections.push({
+      title: "Material Document",
+      columns: ["PO Number", "PO Item", "Material Document Number", "Movement Type", "Posting Date", "Quantity", "Material Number", "Supplier Account"],
+      rows: materialRows.map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.mat_doc_no1 || row?.MBLNR),
+        cleanText(row?.movement_type || row?.BWART),
+        cleanText(row?.posting_date || row?.BUDAT),
+        cleanText(row?.quantity || row?.Menge),
+        cleanText(row?.material_no || row?.MatNo),
+        cleanText(row?.supplier_acc_no || row?.LIFNR),
+      ]),
+    });
+  }
+
+  if (allowInvoice && invoiceRows.length > 0) {
+    sections.push({
+      title: "Invoice Details",
+      columns: ["PO Number", "PO Item", "Invoice Number", "Fiscal Year", "Invoice Item", "Quantity", "Invoice Amount", "Supplier Account"],
+      rows: invoiceRows.map((row) => [
+        cleanText(row?.PoNo || poNo),
+        cleanText(row?.PoItem || poItem),
+        cleanText(row?.acc_doc_no || row?.BELNR),
+        cleanText(row?.fiscal_year || row?.GJAHR),
+        cleanText(row?.invoice_item || row?.InvoiceItem || row?.BUZEI),
+        cleanText(row?.quantity || row?.InvoiceQuantity || row?.MENGE),
+        cleanText(row?.inv_amt_supplier || row?.InvoiceAmount || row?.amt_doc_curr),
+        cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+      ]),
+    });
+  }
+
+  if (allowInvoice && rbkpRows.length > 0) {
+    sections.push({
+      title: "Invoice Header",
+      columns: ["Invoice Document", "Fiscal Year", "Company Code", "Invoice Party", "Gross Amount"],
+      rows: rbkpRows.map((row) => [
+        cleanText(row?.invoice_doc_no || row?.BELNR || row?.InvoiceDocNo),
+        cleanText(row?.fiscal_year || row?.GJAHR),
+        cleanText(row?.company_code || row?.BUKRS),
+        cleanText(row?.invoice_party || row?.Supplier || row?.LIFNR),
+        cleanText(row?.gross_amount || row?.WRBTR),
+      ]),
+    });
+  }
+
+  if (allowAccounting && acdocaRows.length > 0) {
+    sections.push({
+      title: "Accounting Details",
+      columns: ["Accounting Document Number", "Company Code", "Account Number", "Supplier Account", "Material Number", "Amount"],
+      rows: acdocaRows.map((row) => [
+        cleanText(row?.doc_no_acctng_doc || row?.AccountingDocument || row?.BELNR),
+        cleanText(row?.company_code || row?.BUKRS),
+        cleanText(row?.account_no || row?.GLAccount || row?.HKONT),
+        cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+        cleanText(row?.material_no || row?.MATNR),
+        cleanText(row?.amt_company || row?.Amount || row?.WRBTR),
+      ]),
+    });
+  }
+
+  return sections;
 }
 
 function validateCreateTransportTaskInput(body) {
@@ -718,5 +956,237 @@ export const getPurchaseOrderDetailsAction = createSapActionHandler({
     rows: result.rows || [],
     totalCount: result.totalCount || null,
     data: result.data || null,
+  }),
+});
+
+export const getProcurementFlowDetailsByItemAction = createSapActionHandler({
+  executor: "s4hana.mm.getProcurementFlowDetailsByItem",
+
+  validate: validateGetProcurementFlowDetailsByItemInput,
+
+  execute: async ({ owner, body }) => {
+    const connection = await resolveSapConnection({
+      owner,
+      systemId: body.systemId,
+      sapUser: body.sapUser,
+    });
+
+    const requestedPoNo = cleanString(body.purchaseOrderId);
+    const requestedPoItem = cleanString(body.purchaseOrderItem);
+    const requestQuery = cleanString(body.query);
+    const normalizedDocumentFlowIntent =
+      cleanString(body.documentFlowIntent).toUpperCase() ||
+      detectDocumentFlowIntent(requestQuery) ||
+      "COMPLETE_DOCUMENT_FLOW";
+
+    const flowServices = await SapServiceMap.find({
+      owner: { $in: [owner, "local"] },
+      systemId: cleanString(connection?.system?.systemId || body.systemId).toUpperCase(),
+      serviceType: { $in: ["PO", "MAT", "RSEG", "RBKP", "ACDOCA"] },
+      isActive: true,
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const flowResult = await executePurchaseOrderFlow({
+      req: {
+        system: connection.system,
+        sapAuth: connection.sapAuth,
+        body: {
+          purchaseOrderId: requestedPoNo,
+          purchaseOrderItem: requestedPoItem,
+        },
+      },
+      catalogs: flowServices,
+      plan: {
+        primary: { serviceType: "PO" },
+        poNumber: requestedPoNo,
+        poItem: requestedPoItem,
+        documentFlowIntent: normalizedDocumentFlowIntent,
+      },
+      query: requestQuery || `Show complete document flow for PO ${requestedPoNo} item ${requestedPoItem}`,
+      logger: console,
+    });
+
+    if (!flowResult?.ok) {
+      const error = new Error(flowResult?.message || "Failed to fetch procurement flow details.");
+      error.status = 404;
+      throw error;
+    }
+
+    const flowRowsByStep = flowResult?.consolidated?.rows || flowResult?.rows || {};
+    const primaryRows = Array.isArray(flowRowsByStep.PO) ? flowRowsByStep.PO : [];
+    const materialRows = Array.isArray(flowRowsByStep.MAT) ? flowRowsByStep.MAT : [];
+    const invoiceRows = Array.isArray(flowRowsByStep.RSEG) ? flowRowsByStep.RSEG : [];
+    const rbkpRows = Array.isArray(flowRowsByStep.RBKP) ? flowRowsByStep.RBKP : [];
+    const acdocaRows = Array.isArray(flowRowsByStep.ACDOCA) ? flowRowsByStep.ACDOCA : [];
+
+    const poNo = primaryRows[0]?.PoNo || requestedPoNo || "NULL";
+    const poItem = primaryRows[0]?.PoItem || requestedPoItem || "NULL";
+    const procurementPoRows =
+      Array.isArray(flowResult?.consolidated?.purchaseOrder?.rows) && flowResult.consolidated.purchaseOrder.rows.length > 0
+        ? flowResult.consolidated.purchaseOrder.rows
+        : primaryRows;
+
+    const sections = buildProcurementFlowSections({
+      poRows: procurementPoRows,
+      materialRows,
+      invoiceRows,
+      rbkpRows,
+      acdocaRows,
+      poNo,
+      poItem,
+      documentFlowIntent: normalizedDocumentFlowIntent,
+    });
+
+    return {
+      ok: true,
+      message: `Procurement flow details fetched for PO ${poNo} / Item ${poItem}.`,
+      viewType: "procurement_flow",
+      poNo,
+      poItem,
+      documentFlowIntent: normalizedDocumentFlowIntent,
+      sections,
+      flow: flowResult,
+      requestContext: {
+        query: requestQuery,
+        businessScope: cleanString(body.businessScope),
+        cursor: body.cursor ?? null,
+        pendingAction: body.pendingAction || null,
+        availableSystems: Array.isArray(body.availableSystems) ? body.availableSystems : null,
+      },
+    };
+  },
+
+  mapSuccessResult: (result) => ({
+    viewType: result.viewType,
+    poNo: result.poNo,
+    poItem: result.poItem,
+    documentFlowIntent: result.documentFlowIntent,
+    sections: result.sections,
+    flow: result.flow,
+    requestContext: result.requestContext,
+  }),
+});
+
+export const getPendingPurchaseOrdersAction = createSapActionHandler({
+  executor: "s4hana.mm.getPendingPurchaseOrders",
+
+  validate: validateGetPendingPurchaseOrdersInput,
+
+  execute: async ({ owner, body }) => {
+    const connection = await resolveSapConnection({
+      owner,
+      systemId: body.systemId,
+      sapUser: body.sapUser,
+    });
+
+    const serviceMaps = await SapServiceMap.find({
+      owner: { $in: [owner, "local"] },
+      systemId: cleanString(connection?.system?.systemId || body.systemId).toUpperCase(),
+      serviceType: "PO",
+      isActive: true,
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const pendingPoService = await resolveCompatiblePendingPoService({
+      catalogs: serviceMaps,
+      system: connection.system,
+      sapAuth: connection.sapAuth,
+    });
+    assertPendingPoServiceCompatibility(pendingPoService);
+
+    const result = await getPendingPurchaseOrderList({
+      system: connection.system,
+      sapAuth: connection.sapAuth,
+      service: pendingPoService,
+      dateFrom: cleanString(body.dateFrom),
+      dateTo: cleanString(body.dateTo),
+      poNo: cleanString(body.poNo),
+      pageSize: Number(body.pageSize) || 30,
+      cursor: body.cursor || null,
+    });
+
+    return {
+      ok: true,
+      message: "Pending purchase orders fetched successfully.",
+      ...result,
+    };
+  },
+
+  mapSuccessResult: (result) => ({
+    viewType: result.viewType,
+    intent: result.intent,
+    dateFrom: result.dateFrom,
+    dateTo: result.dateTo,
+    pageSize: result.pageSize,
+    rows: result.rows,
+    count: result.count,
+    hasMore: result.hasMore,
+    nextPage: result.nextPage,
+    pendingFilter: result.pendingFilter,
+    orderBy: result.orderBy,
+    dataQualityIssues: result.dataQualityIssues,
+    sourceService: result.sourceService,
+    sourceEntitySet: result.sourceEntitySet,
+  }),
+});
+
+export const getPendingPurchaseOrderItemsAction = createSapActionHandler({
+  executor: "s4hana.mm.getPendingPurchaseOrderItems",
+
+  validate: validateGetPendingPurchaseOrderItemsInput,
+
+  execute: async ({ owner, body }) => {
+    const connection = await resolveSapConnection({
+      owner,
+      systemId: body.systemId,
+      sapUser: body.sapUser,
+    });
+
+    const serviceMaps = await SapServiceMap.find({
+      owner: { $in: [owner, "local"] },
+      systemId: cleanString(connection?.system?.systemId || body.systemId).toUpperCase(),
+      serviceType: "PO",
+      isActive: true,
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const pendingPoService = await resolveCompatiblePendingPoService({
+      catalogs: serviceMaps,
+      system: connection.system,
+      sapAuth: connection.sapAuth,
+    });
+    assertPendingPoServiceCompatibility(pendingPoService);
+
+    const result = await getPendingPurchaseOrderItems({
+      system: connection.system,
+      sapAuth: connection.sapAuth,
+      service: pendingPoService,
+      poNo: cleanString(body.poNo),
+      dateFrom: cleanString(body.dateFrom),
+      dateTo: cleanString(body.dateTo),
+    });
+
+    return {
+      ok: true,
+      message: `Pending items fetched for PO ${result.poNo}.`,
+      ...result,
+    };
+  },
+
+  mapSuccessResult: (result) => ({
+    viewType: result.viewType,
+    intent: result.intent,
+    poNo: result.poNo,
+    dateFrom: result.dateFrom,
+    dateTo: result.dateTo,
+    items: result.items,
+    count: result.count,
+    pendingFilter: result.pendingFilter,
+    sourceService: result.sourceService,
+    sourceEntitySet: result.sourceEntitySet,
   }),
 });

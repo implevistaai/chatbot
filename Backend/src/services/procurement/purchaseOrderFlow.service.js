@@ -27,6 +27,66 @@ function firstNonEmpty(...values) {
   return "";
 }
 
+function normalizeId(value, pad = null) {
+  const text = cleanString(value);
+  if (!text) return "";
+  if (!Number.isFinite(Number(pad)) || Number(pad) <= 0) return text;
+  return normalizeNumericId(text, Number(pad));
+}
+
+function readRowPoNumber(row = {}) {
+  return firstNonEmpty(
+    row?.purchse_ordr_no,
+    row?.PoNo,
+    row?.po_no,
+    row?.PO_NO,
+    row?.EBELN,
+    row?.purch_doc_no,
+    row?.PurchaseOrder,
+    row?.purchase_order,
+    row?.ref_doc_no,
+    row?.RefDocNo
+  );
+}
+
+function readRowPoItem(row = {}) {
+  return firstNonEmpty(
+    row?.purchse_ordr_itm_no,
+    row?.PoItem,
+    row?.po_item,
+    row?.PO_ITEM,
+    row?.EBELP,
+    row?.purch_item_no,
+    row?.PurchaseOrderItem,
+    row?.purchase_order_item,
+    row?.PoItemNo,
+    row?.po_item_no
+  );
+}
+
+function filterRowsByPoContext(rows = [], { poNo = "", poItem = "", poPad = 10, itemPad = 5 } = {}) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const targetPoNo = normalizeId(poNo, poPad);
+  const targetPoItem = normalizeId(poItem, itemPad);
+
+  if (!targetPoNo && !targetPoItem) return sourceRows;
+
+  const filtered = sourceRows.filter((row) => {
+    const rowPoNo = normalizeId(readRowPoNumber(row), poPad);
+    const rowPoItem = normalizeId(readRowPoItem(row), itemPad);
+
+    if (targetPoNo && rowPoNo && rowPoNo !== targetPoNo) return false;
+    if (targetPoItem && rowPoItem && rowPoItem !== targetPoItem) return false;
+
+    if (targetPoNo && !rowPoNo) return false;
+    if (targetPoItem && !rowPoItem) return false;
+
+    return true;
+  });
+
+  return filtered;
+}
+
 function buildQuery(entitySet, query, maxTop = 200) {
   return buildEntitySetQuery(entitySet, query, { maxTop });
 }
@@ -281,7 +341,7 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
   });
   const poResponse = await fetchFromSap({ system: req.system, service: primary, relativePath: poQuery }, req.sapAuth);
   const poRows = toResultsArray(poResponse);
-  attachRows({ steps, rowsByStep }, "PO", poRows, poResponse, poQuery);
+  
 
   if (!poRows.length) {
     writeLog("No Purchase Order Found");
@@ -290,15 +350,25 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
 
   writeLog("PO Retrieved");
 
-  const firstPo = poRows[0] || {};
+  const requestedPoItem = normalizeNumericId(
+    plan?.poItem || req?.body?.purchaseOrderItem || req?.body?.purchaseOrderItemNo || req?.body?.poItem || req?.body?.docItem || "",
+    Number(primary.itemPad) || 5
+  );
+  const matchingPoRows = requestedPoItem
+    ? poRows.filter((row) => normalizeNumericId(firstNonEmpty(row?.PoItem, row?.EBELP), Number(primary.itemPad) || 5) === requestedPoItem)
+    : poRows;
+  const effectivePoRows = matchingPoRows.length > 0 ? matchingPoRows : poRows;
+  attachRows({ steps, rowsByStep }, "PO", effectivePoRows, poResponse, poQuery);
+
+  const firstPo = effectivePoRows[0] || {};
   const resolvedPoNo = normalizeNumericId(firstNonEmpty(firstPo?.PoNo, firstPo?.EBELN, poNumber), Number(primary.idPad) || 10);
-  const resolvedPoItem = normalizeNumericId(firstNonEmpty(firstPo?.PoItem, firstPo?.EBELP), Number(primary.itemPad) || 5);
+  const resolvedPoItem = normalizeNumericId(firstNonEmpty(firstPo?.PoItem, firstPo?.EBELP, requestedPoItem), Number(primary.itemPad) || 5);
   const wantsMaterialStep = stepPlan.includes("MAT");
   const wantsInvoiceStep = stepPlan.includes("RSEG");
 
   const matService = wantsMaterialStep ? services.MAT : null;
   if (!matService && !wantsInvoiceStep) {
-    const merged = buildMergedFlowObject({ poRows, rowsByStep });
+    const merged = buildMergedFlowObject({ poRows: effectivePoRows, rowsByStep });
     return { ok: true, message: "Purchase order retrieved.", steps, rowsByStep, logs, consolidated: { ...merged, steps, rows: rowsByStep, summary: buildSummaryPayload({ steps, rows: rowsByStep }) } };
   }
 
@@ -308,8 +378,32 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
     writeLog(`PO Number: ${resolvedPoNo}`);
     writeLog(`PO Item: ${resolvedPoItem}`);
     writeLog("Calling ZIV_MAT_LEDGERS");
-    const matPoField = pickPreferredField(matService, ["purch_doc_no", "PoNo", "EBELN", "PurchaseOrder"], matService.idField || "purch_doc_no");
-    const matItemField = pickPreferredField(matService, ["purch_item_no", "PoItem", "EBELP", "PurchaseOrderItem"], matService.itemField || "purch_item_no");
+    let matPoField = pickPreferredField(
+      matService,
+      ["purchse_ordr_no", "purch_doc_no", "PoNo", "EBELN", "PurchaseOrder"],
+      matService.idField || "purchse_ordr_no"
+    );
+    let matItemField = pickPreferredField(
+      matService,
+      ["purchse_ordr_itm_no", "purch_item_no", "PoItem", "EBELP", "PurchaseOrderItem"],
+      matService.itemField || "purchse_ordr_itm_no"
+    );
+
+    if (!matPoField) matPoField = cleanString(matService.idField || "purchse_ordr_no");
+    if (!matItemField) matItemField = cleanString(matService.itemField || "purchse_ordr_itm_no");
+
+    const normalizedMatPoField = normalizeFieldText(matPoField);
+    const normalizedMatItemField = normalizeFieldText(matItemField);
+    if (normalizedMatPoField && normalizedMatItemField && normalizedMatPoField === normalizedMatItemField) {
+      if (hasCatalogField(matService, "purchse_ordr_itm_no")) {
+        matItemField = "purchse_ordr_itm_no";
+      } else if (hasCatalogField(matService, "purch_item_no")) {
+        matItemField = "purch_item_no";
+      } else {
+        matItemField = "";
+      }
+    }
+
     const matQueryParts = [];
     if (matPoField && resolvedPoNo) matQueryParts.push(`${matPoField} eq '${resolvedPoNo}'`);
     if (matItemField && resolvedPoItem) matQueryParts.push(`${matItemField} eq '${resolvedPoItem}'`);
@@ -317,13 +411,98 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
       $filter: matQueryParts.join(" and "),
       $top: 200,
     });
-    const matResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: matQuery }, req.sapAuth);
-    matRows = toResultsArray(matResponse);
-    attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matQuery);
+    let matResponse = null;
+    let matRequestPath = matQuery;
+    let matAttached = false;
+
+    const toScopedMatRows = (rows) =>
+      filterRowsByPoContext(rows, {
+        poNo: resolvedPoNo,
+        poItem: resolvedPoItem,
+        poPad: Number(primary.idPad) || 10,
+        itemPad: Number(primary.itemPad) || 5,
+      });
+
+    const looksLikeMissingPropertyError = (error) => {
+      const msg = String(error?.message || "");
+      const body = String(error?.responseBody || "");
+      return Number(error?.status) === 400 && /property\s+.+\s+not\s+found/i.test(`${msg} ${body}`);
+    };
+
+    try {
+      matResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: matQuery }, req.sapAuth);
+      matRows = toScopedMatRows(toResultsArray(matResponse));
+      attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
+      matAttached = true;
+    } catch (error) {
+      if (!looksLikeMissingPropertyError(error)) {
+        throw error;
+      }
+
+      writeLog("[PO_FLOW] MAT filter field mismatch detected; trying fallback MAT queries");
+
+      const retryFieldPairs = [
+        { poField: "purchse_ordr_no", itemField: "purchse_ordr_itm_no" },
+        { poField: "PoNo", itemField: "PoItem" },
+        { poField: "EBELN", itemField: "EBELP" },
+        { poField: "purch_doc_no", itemField: "purch_item_no" },
+      ];
+
+      for (const pair of retryFieldPairs) {
+        const retryParts = [];
+        if (resolvedPoNo) retryParts.push(`${pair.poField} eq '${resolvedPoNo}'`);
+        if (resolvedPoItem) retryParts.push(`${pair.itemField} eq '${resolvedPoItem}'`);
+
+        if (!retryParts.length) continue;
+
+        const retryQuery = buildQuery(matService.entitySet, {
+          $filter: retryParts.join(" and "),
+          $top: 200,
+        });
+
+        try {
+          const retryResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: retryQuery }, req.sapAuth);
+          const retryRows = toScopedMatRows(toResultsArray(retryResponse));
+          if (retryRows.length > 0) {
+            matRows = retryRows;
+            matRequestPath = retryQuery;
+            matResponse = retryResponse;
+            attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
+            matAttached = true;
+            writeLog(`[PO_FLOW] MAT fallback filter applied: ${pair.poField}/${pair.itemField}`);
+            break;
+          }
+        } catch (retryError) {
+          if (!looksLikeMissingPropertyError(retryError)) {
+            writeLog(`[PO_FLOW] MAT fallback query failed: ${pair.poField}/${pair.itemField}`);
+          }
+        }
+      }
+
+      if (!matAttached) {
+        const unfilteredQuery = buildQuery(matService.entitySet, { $top: 200 });
+        try {
+          const unfilteredResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: unfilteredQuery }, req.sapAuth);
+          matRows = toScopedMatRows(toResultsArray(unfilteredResponse));
+          matRequestPath = unfilteredQuery;
+          matResponse = unfilteredResponse;
+          attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
+          matAttached = true;
+          writeLog("[PO_FLOW] MAT unfiltered fallback applied");
+        } catch {
+          writeLog("[PO_FLOW] MAT unfiltered fallback failed");
+        }
+      }
+
+      if (!matAttached) {
+        // Keep complete flow running even when MAT fields are incompatible for this system.
+        attachRows({ steps, rowsByStep }, "MAT", [], null, matQuery);
+      }
+    }
 
     if (!matRows.length && !wantsInvoiceStep) {
       writeLog("No Material Document Found");
-      const merged = buildMergedFlowObject({ poRows, matRows: [], rowsByStep, flowStatus: "PARTIAL" });
+      const merged = buildMergedFlowObject({ poRows: effectivePoRows, matRows: [], rowsByStep, flowStatus: "PARTIAL" });
       return {
         ok: true,
         message: "Goods Receipt not available.",
@@ -343,7 +522,7 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
   const matDoc = firstNonEmpty(matRows[0]?.MaterialDocument, matRows[0]?.MBLNR);
   const rsegService = stepPlan.includes("RSEG") ? services.RSEG : null;
   if (!rsegService) {
-    const merged = buildMergedFlowObject({ poRows, matRows, rowsByStep, flowStatus: "PARTIAL" });
+    const merged = buildMergedFlowObject({ poRows: effectivePoRows, matRows, rowsByStep, flowStatus: "PARTIAL" });
     return { ok: true, message: "Material movement retrieved.", steps, rowsByStep, logs, consolidated: { ...merged, steps, rows: rowsByStep, summary: buildSummaryPayload({ steps, rows: rowsByStep }) } };
   }
 
@@ -352,29 +531,42 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
   writeLog(`PO Number: ${resolvedPoNo}`);
   writeLog(`PO Item: ${resolvedPoItem}`);
   const rsegPoField = pickPreferredField(rsegService, ["purch_doc_no", "PoNo", "EBELN", "PurchaseOrder"], rsegService.idField || "purch_doc_no");
-  const resolvedRsegItemField = pickPreferredField(
-    rsegService,
-    ["purch_item_no", "PoItem", "EBELP", "PurchaseOrderItem"],
-    rsegService.itemField || "purch_item_no"
-  );
-  const rsegPoItemField =
-    resolvedRsegItemField && normalizeFieldText(resolvedRsegItemField) !== normalizeFieldText(rsegPoField)
-      ? resolvedRsegItemField
-      : "purch_item_no";
+  let rsegPoItemField = pickPreferredField(rsegService, ["purch_item_no", "PoItem", "EBELP", "PurchaseOrderItem"], "purch_item_no");
+  const normalizedRsegPoField = normalizeFieldText(rsegPoField);
+  const normalizedRsegPoItemField = normalizeFieldText(rsegPoItemField);
+
+  // Guardrail: if item field resolves to the same field as PO number, force a true item field or skip item filter.
+  if (normalizedRsegPoItemField && normalizedRsegPoField && normalizedRsegPoItemField === normalizedRsegPoField) {
+    if (hasCatalogField(rsegService, "purch_item_no")) {
+      rsegPoItemField = "purch_item_no";
+    } else if (hasCatalogField(rsegService, "PoItem")) {
+      rsegPoItemField = "PoItem";
+    } else if (hasCatalogField(rsegService, "EBELP")) {
+      rsegPoItemField = "EBELP";
+    } else {
+      rsegPoItemField = "";
+    }
+  }
+
+  const rsegFilters = [];
+  if (resolvedPoNo && rsegPoField) rsegFilters.push(`${rsegPoField} eq '${resolvedPoNo}'`);
+  if (resolvedPoItem && rsegPoItemField) rsegFilters.push(`${rsegPoItemField} eq '${resolvedPoItem}'`);
   const rsegQuery = buildQuery(rsegService.entitySet, {
-    $filter: [
-      resolvedPoNo && rsegPoField ? `${rsegPoField} eq '${resolvedPoNo}'` : null,
-      resolvedPoItem && rsegPoItemField ? `${rsegPoItemField} eq '${resolvedPoItem}'` : null,
-    ].filter(Boolean).join(" and "),
+    $filter: rsegFilters.join(" and "),
     $top: 200,
   });
   const rsegResponse = await fetchFromSap({ system: req.system, service: rsegService, relativePath: rsegQuery }, req.sapAuth);
-  const rsegRows = toResultsArray(rsegResponse);
+  const rsegRows = filterRowsByPoContext(toResultsArray(rsegResponse), {
+    poNo: resolvedPoNo,
+    poItem: resolvedPoItem,
+    poPad: Number(primary.idPad) || 10,
+    itemPad: Number(primary.itemPad) || 5,
+  });
   attachRows({ steps, rowsByStep }, "RSEG", rsegRows, rsegResponse, rsegQuery);
 
   if (!rsegRows.length) {
     writeLog("No Invoice Found");
-    const merged = buildMergedFlowObject({ poRows, matRows, rsegRows: [], rowsByStep, flowStatus: "PARTIAL" });
+    const merged = buildMergedFlowObject({ poRows: effectivePoRows, matRows, rsegRows: [], rowsByStep, flowStatus: "PARTIAL" });
     return {
       ok: true,
       message: "Invoice not created.",
@@ -441,7 +633,7 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
   writeLog("Purchase Order Flow Completed");
 
   const merged = buildMergedFlowObject({
-    poRows,
+    poRows: effectivePoRows,
     matRows,
     rsegRows,
     rbkpRows: rowsByStep.RBKP || [],
