@@ -11,6 +11,111 @@ import { extractQuantityValue } from "../src/services/sap/sapValueExtractor.serv
 import { getProcurementCdsRegistry, planProcurementChatQuery } from "../src/services/procurement/purchaseOrderChatbot.service.js";
 import { detectDocumentFlowIntent, getDocumentFlowExecutionPlan, isPurchaseOrderFlowRequest } from "../src/services/procurement/procurementQueryEngine.service.js";
 import { getDocumentFlowStepPlan, normalizeDocumentFlowIntent } from "../src/services/procurement/purchaseOrderFlow.service.js";
+import {
+  buildPendingInvoicePoQuery,
+  buildPendingInvoiceRsegQuery,
+  calculatePendingInvoiceQuantity,
+  calculatePendingInvoiceRows,
+  executePendingInvoiceFlow,
+  resolvePendingInvoiceScope,
+} from "../src/services/procurement/pendingInvoice.service.js";
+
+test("pending invoice scope defaults to all POs in the dynamic last two years", () => {
+  const scope = resolvePendingInvoiceScope("show pending invoice", { today: new Date("2026-08-20T00:00:00Z") });
+  assert.equal(scope.intent, "PENDING_INVOICE_STATUS");
+  assert.equal(scope.scope, "ALL_PO_ITEMS");
+  assert.equal(scope.dateScope, "LAST_2_YEARS");
+  assert.equal(scope.fromDate, "2024-08-20");
+  assert.equal(scope.toDate, "2026-08-20");
+  assert.equal(scope.poNumber, null);
+  assert.equal(scope.poItem, null);
+});
+
+test("pending invoice scope honors year, relative period, explicit range, PO and item", () => {
+  const today = new Date("2026-08-20T00:00:00Z");
+  assert.equal(resolvePendingInvoiceScope("show pending invoice for 2025", { today }).dateScope, "YEAR_2025");
+  assert.equal(resolvePendingInvoiceScope("show pending invoice for last 6 months", { today }).dateScope, "LAST_6_MONTHS");
+  const range = resolvePendingInvoiceScope("show pending invoice from 2025-01-01 to 2025-06-30", { today });
+  assert.equal(range.fromDate, "2025-01-01");
+  assert.equal(range.toDate, "2025-06-30");
+  const single = resolvePendingInvoiceScope("show pending invoice for PO 4500001234 item 10", { today });
+  assert.equal(single.scope, "SINGLE_PO");
+  assert.equal(single.poNumber, "4500001234");
+  assert.equal(single.poItem, "10");
+});
+
+test("pending invoice OData queries never create null filters", () => {
+  const scope = resolvePendingInvoiceScope("show pending invoice", { today: new Date("2026-08-20T00:00:00Z") });
+  const poQuery = buildPendingInvoicePoQuery({
+    service: { entitySet: "ZIV_PO_DETAILS", fields: [{ name: "PoNo" }, { name: "PoItem" }, { name: "PoQuantity" }, { name: "PoDocDate" }] },
+    scope,
+  });
+  const rsegQuery = buildPendingInvoiceRsegQuery({ service: { entitySet: "ZIV_RSEG_DEATILS" }, scope, poRows: [] });
+  assert.doesNotMatch(poQuery, /(?:null|undefined)/i);
+  assert.doesNotMatch(rsegQuery, /(?:null|undefined)/i);
+  assert.match(poQuery, /PoDocDate/);
+  assert.doesNotMatch(poQuery, /PoNo%20eq/);
+});
+
+test("pending invoice all-PO RSEG query batches selected PO numbers without date-limiting invoice history", () => {
+  const scope = resolvePendingInvoiceScope("show pending invoice", { today: new Date("2026-08-20T00:00:00Z") });
+  const query = buildPendingInvoiceRsegQuery({
+    service: { entitySet: "ZIV_RSEG_DEATILS" },
+    scope,
+    poRows: [{ PoNo: "4500001234" }, { PoNo: "4500005678" }],
+  });
+  assert.match(query, /purch_doc_no%20eq%20%274500001234%27/);
+  assert.match(query, /purch_doc_no%20eq%20%274500005678%27/);
+  assert.doesNotMatch(query, /PoDocDate|fromDate|toDate/);
+});
+
+const rsegInvoice = (po, item, quantity, document = "510000001") => ({
+  purch_doc_no: po,
+  purch_item_no: item,
+  qty_inv_purchse_ordr_uom: quantity,
+  acc_doc_no: document,
+});
+
+test("pending invoice sums matching RSEG quantities and ignores delivery", () => {
+  const result = calculatePendingInvoiceQuantity({
+    poRow: { PoNo: "4500001234", PoItem: "00010", PoQuantity: "100.500", Delivered: "50" },
+    invoiceRows: [
+      rsegInvoice("4500001234", "00010", "10.125"),
+      rsegInvoice("4500001234", "00010", "15.125"),
+      rsegInvoice("4500001234", "00020", "99"),
+    ],
+    logger: { warn() {} },
+  });
+  assert.equal(result.invoicedQuantity, "25.250");
+  assert.equal(result.pendingInvoiceQuantity, "75.250");
+});
+
+test("pending invoice handles no invoice, full invoice, excess invoice, zero and null quantities", () => {
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: "100" }, logger: { warn() {} } }).pendingInvoiceQuantity, "100");
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: "100" }, invoiceRows: [rsegInvoice("1", "10", "100")], logger: { warn() {} } }).pendingInvoiceQuantity, "0");
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: "100" }, invoiceRows: [rsegInvoice("1", "10", "110")], logger: { warn() {} } }).pendingInvoiceQuantity, "0");
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: "0" }, invoiceRows: [rsegInvoice("1", "10", "0")], logger: { warn() {} } }).pendingInvoiceQuantity, "0");
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: null }, logger: { warn() {} } }).valid, false);
+  assert.equal(calculatePendingInvoiceQuantity({ poRow: { PoNo: "1", PoItem: "10", PoQuantity: "100" }, invoiceRows: [rsegInvoice("1", "10", null)], logger: { warn() {} } }).pendingInvoiceQuantity, "100");
+});
+
+test("pending invoice joins by PO number and item across multiple PO items", () => {
+  const results = calculatePendingInvoiceRows({
+    poRows: [
+      { PoNo: "4500001234", PoItem: "00010", PoQuantity: "100", Delivered: "20" },
+      { PoNo: "4500001234", PoItem: "00020", PoQuantity: "200", Delivered: "50" },
+    ],
+    invoiceRows: [
+      rsegInvoice("4500001234", "00010", "20"),
+      rsegInvoice("4500001234", "00010", "30"),
+      rsegInvoice("4500001234", "00010", "10"),
+      rsegInvoice("4500001234", "00020", "50"),
+      rsegInvoice("4500001234", "00030", "100"),
+    ],
+    logger: { warn() {} },
+  });
+  assert.deepEqual(results.map((result) => result.pendingInvoiceQuantity), ["40", "150"]);
+});
 
 test("procurement registry exposes the five CDS sources", () => {
   const registry = getProcurementCdsRegistry();
@@ -154,10 +259,10 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
 
 test("pending invoice formatter reports only pending status fields", () => {
   const reply = buildPendingInvoiceStatusReply({
-    poRow: { PoNo: "4500000001", PoItem: "00010", PO_Quantity: "100.000", MatNo: "TG10" },
+    poRow: { PoNo: "4500000001", PoItem: "00010", PoQuantity: "100.000", MatNo: "TG10" },
     rsegRows: [
-      { quantity: "40.000" },
-      { quantity: "20.000" },
+      { purch_doc_no: "4500000001", purch_item_no: "00010", qty_inv_purchse_ordr_uom: "40.000" },
+      { purch_doc_no: "4500000001", purch_item_no: "00010", qty_inv_purchse_ordr_uom: "20.000" },
     ],
     poNo: "4500000001",
     poItem: "00010",
@@ -178,8 +283,8 @@ test("pending invoice formatter reports only pending status fields", () => {
 
 test("pending invoice sections expose a horizontal table payload", () => {
   const sections = buildPendingInvoiceStatusSections({
-    poRow: { PoNo: "4500000006", PoItem: "00015", PO_Quantity: "146.000", MatNo: "MZ-RM-R100-05" },
-    rsegRows: [{ quantity: "146.000" }],
+    poRow: { PoNo: "4500000006", PoItem: "00015", PoQuantity: "146.000", MatNo: "MZ-RM-R100-05" },
+    rsegRows: [{ purch_doc_no: "4500000006", purch_item_no: "00015", qty_inv_purchse_ordr_uom: "146.000" }],
     poNo: "4500000006",
     poItem: "00015",
   });
@@ -209,8 +314,8 @@ test("pending invoice sections expose a horizontal table payload", () => {
 
 test("pending invoice formatter uses PO_Quantity and does not fall back to zero when present", () => {
   const reply = buildPendingInvoiceStatusReply({
-    poRow: { PoNo: "4500000002", PoItem: "00001", PO_Quantity: "49.000", MatNo: "MZ-RM-R300-01" },
-    rsegRows: [{ quantity: "49.000" }],
+    poRow: { PoNo: "4500000002", PoItem: "00001", PoQuantity: "49.000", MatNo: "MZ-RM-R300-01" },
+    rsegRows: [{ purch_doc_no: "4500000002", purch_item_no: "00001", qty_inv_purchse_ordr_uom: "49.000" }],
     poNo: "4500000002",
     poItem: "00001",
   });
@@ -244,8 +349,8 @@ test("SAP quantity extractor handles strings, xml objects, namespaces, and fallb
 
 test("pending invoice formatter handles completed, partial, and empty invoice states", () => {
   const completedReply = buildPendingInvoiceStatusReply({
-    poRow: { PoNo: "4500000003", PoItem: "00001", PO_Quantity: "49", MatNo: "MZ-RM-R300-03" },
-    rsegRows: [{ quantity: "49" }],
+    poRow: { PoNo: "4500000003", PoItem: "00001", PoQuantity: "49", MatNo: "MZ-RM-R300-03" },
+    rsegRows: [{ purch_doc_no: "4500000003", purch_item_no: "00001", qty_inv_purchse_ordr_uom: "49" }],
     poNo: "4500000003",
     poItem: "00001",
   });
@@ -256,8 +361,8 @@ test("pending invoice formatter handles completed, partial, and empty invoice st
   assert.match(completedReply, /Invoice Status: Completed/);
 
   const partialReply = buildPendingInvoiceStatusReply({
-    poRow: { PoNo: "4500000004", PoItem: "00001", PO_Quantity: "100", MatNo: "MZ-RM-R300-04" },
-    rsegRows: [{ quantity: "40" }],
+    poRow: { PoNo: "4500000004", PoItem: "00001", PoQuantity: "100", MatNo: "MZ-RM-R300-04" },
+    rsegRows: [{ purch_doc_no: "4500000004", purch_item_no: "00001", qty_inv_purchse_ordr_uom: "40" }],
     poNo: "4500000004",
     poItem: "00001",
   });
@@ -268,7 +373,7 @@ test("pending invoice formatter handles completed, partial, and empty invoice st
   assert.match(partialReply, /Invoice Status: Pending/);
 
   const noneReply = buildPendingInvoiceStatusReply({
-    poRow: { PoNo: "4500000005", PoItem: "00001", PO_Quantity: "50", MatNo: "MZ-RM-R300-05" },
+    poRow: { PoNo: "4500000005", PoItem: "00001", PoQuantity: "50", MatNo: "MZ-RM-R300-05" },
     rsegRows: [],
     poNo: "4500000005",
     poItem: "00001",
@@ -278,4 +383,55 @@ test("pending invoice formatter handles completed, partial, and empty invoice st
   assert.match(noneReply, /Invoiced Quantity: 0\.000/);
   assert.match(noneReply, /Pending Quantity: 50\.000/);
   assert.match(noneReply, /Invoice Status: Not Invoiced/);
+});
+
+test("pending invoice does not convert an RSEG API failure into zero invoiced quantity", async () => {
+  const result = await executePendingInvoiceFlow({
+    system: {},
+    sapAuth: {},
+    poService: { entitySet: "ZIV_PO_DETAILS", fields: [{ name: "PoNo" }, { name: "PoItem" }, { name: "PoQuantity" }, { name: "PoDocDate" }] },
+    rsegService: { entitySet: "ZIV_RSEG_DEATILS" },
+    scope: resolvePendingInvoiceScope("show pending invoice", { today: new Date("2026-08-20T00:00:00Z") }),
+    logger: { log() {}, error() {} },
+    fetchSap: async ({ service }) => {
+      if (service.entitySet === "ZIV_PO_DETAILS") return { d: { results: [{ PoNo: "4500001234", PoItem: "00010", PoQuantity: "100" }] } };
+      throw new Error("RSEG unavailable");
+    },
+  });
+  assert.equal(result.status, "INCOMPLETE_INVOICE_DATA");
+  assert.equal(result.statusRows, undefined);
+});
+
+test("pending invoice pages results and exposes load-more metadata when more than 30 rows exist", async () => {
+  const poRows = Array.from({ length: 31 }, (_, index) => ({
+    PoNo: `45000012${String(index + 1).padStart(2, "0")}`,
+    PoItem: "00010",
+    PoQuantity: "100",
+    PoDocDate: "2025-08-20",
+  }));
+  const rsegRows = poRows.map((row) => ({
+    purch_doc_no: row.PoNo,
+    purch_item_no: row.PoItem,
+    qty_inv_purchse_ordr_uom: "25",
+  }));
+
+  const result = await executePendingInvoiceFlow({
+    system: {},
+    sapAuth: {},
+    poService: { entitySet: "ZIV_PO_DETAILS", fields: [{ name: "PoNo" }, { name: "PoItem" }, { name: "PoQuantity" }, { name: "PoDocDate" }] },
+    rsegService: { entitySet: "ZIV_RSEG_DEATILS" },
+    scope: resolvePendingInvoiceScope("show pending invoice", { today: new Date("2026-08-20T00:00:00Z") }),
+    logger: { log() {}, error() {} },
+    fetchSap: async ({ service }) => {
+      if (service.entitySet === "ZIV_PO_DETAILS") return { d: { results: poRows } };
+      return { d: { results: rsegRows } };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "SUCCESS");
+  assert.equal(result.statusRows.length, 30);
+  assert.equal(result.hasMore, true);
+  assert.ok(result.nextPage);
+  assert.equal(result.totalCount, 31);
 });

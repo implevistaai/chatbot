@@ -38,6 +38,11 @@ import {
 } from "./stream.shared.js";
 import { loadLastAssistantMemory } from "../_chat/memory.js";
 import { isNextIntent, parseNextCount } from "../_chat/pagination.js";
+import {
+  calculatePendingInvoiceRows,
+  executePendingInvoiceFlow,
+  resolvePendingInvoiceScope,
+} from "../../services/procurement/pendingInvoice.service.js";
 
 function getDeploymentOwner(baseOwner = "local") {
   const scope = String(process.env.MONGODB_DB_NAME || process.env.APP_NAMESPACE || "").trim();
@@ -249,21 +254,12 @@ function numericQuantity(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function isZeroQuantity(value) {
+  return /^0(?:\.0+)?$/.test(String(value ?? "").trim());
+}
+
 function getPoOrderedQuantity(poRow = {}) {
-  return extractQuantityValue(poRow, [
-    "PO_Quantity",
-    "Po_Quantity",
-    "PoQuantity",
-    "po_quantity",
-    "POQuantity",
-    "poQuantity",
-    "d:PO_Quantity",
-    "quantity",
-    "Menge",
-    "Quantity",
-    "OrderQuantity",
-    "OrderedQuantity",
-  ]);
+  return extractQuantityValue(poRow, ["PoQuantity"]);
 }
 
 function buildProcurementFlowReply({
@@ -458,9 +454,9 @@ function buildProcurementFlowSections({
   return sections;
 }
 
-function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NULL", poItem = "NULL" } = {}) {
+function buildPendingInvoiceStatusReply({ poRow = {}, poRows = [], rsegRows = [], poNo = "NULL", poItem = "NULL" } = {}) {
   const statusRows = buildPendingInvoiceStatusRows({
-    poRows: poRow && Object.keys(poRow).length ? [poRow] : [],
+    poRows: Array.isArray(poRows) && poRows.length > 0 ? poRows : (poRow && Object.keys(poRow).length ? [poRow] : []),
     rsegRows,
     poNo,
   });
@@ -475,7 +471,7 @@ function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NUL
       "| PO Item | Material | Ordered Quantity | Invoiced Quantity | Pending Quantity | Invoice Status |",
       "| --- | --- | --- | --- | --- | --- |",
       ...statusRows.map((row) =>
-        `| ${cleanText(row.poItem)} | ${cleanText(row.material)} | ${formatQuantityValue(row.orderedQuantity)} | ${formatQuantityValue(row.invoicedQuantity)} | ${formatQuantityValue(row.pendingQuantity)} | ${cleanText(row.invoiceStatus)} |`
+        `| ${cleanText(row.poItem)} | ${cleanText(row.material)} | ${formatQuantityValue(row.orderedQuantity, "N/A")} | ${formatQuantityValue(row.invoicedQuantity, "N/A")} | ${formatQuantityValue(row.pendingQuantity, "N/A")} | ${cleanText(row.invoiceStatus)} |`
       ),
     ];
 
@@ -483,11 +479,8 @@ function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NUL
   }
 
   const rows = Array.isArray(rsegRows) ? rsegRows : [];
-  const orderedQuantityValue = getPoOrderedQuantity(poRow);
-  const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
-  const invoicedQuantity = rows.reduce((sum, row) => sum + (Number(row?.quantity) || 0), 0);
-  const pendingQuantity = Math.max(orderedQuantity - invoicedQuantity, 0);
-  const invoiceStatus = rows.length === 0 ? "Not Invoiced" : pendingQuantity > 0 ? "Pending" : "Completed";
+  const calculation = calculatePendingInvoiceRows({ poRows: [poRow], invoiceRows: rows })[0];
+  const invoiceStatus = !calculation.valid ? "Invalid PO Quantity" : rows.length === 0 ? "Not Invoiced" : !isZeroQuantity(calculation.pendingInvoiceQuantity) ? "Pending" : "Completed";
 
   console.log("[PENDING_INVOICE_QUANTITY_DEBUG]", {
     poNumber: poRow?.PoNo,
@@ -496,19 +489,15 @@ function buildPendingInvoiceStatusReply({ poRow = {}, rsegRows = [], poNo = "NUL
     orderedQuantity: getPoOrderedQuantity(poRow),
   });
 
-  if (!orderedQuantity) {
-    console.warn("Ordered quantity missing from SAP response", poRow);
-  }
-
   return [
     "Pending Invoice Status",
     "",
     `PO Number: ${cleanText(poRow?.PoNo || poNo)}`,
     `PO Item: ${cleanText(poRow?.PoItem || poItem)}`,
     `Material: ${cleanText(poRow?.MatNo || poRow?.material_no)}`,
-    `Ordered Quantity: ${formatQuantityValue(orderedQuantityValue)}`,
-    `Invoiced Quantity: ${formatQuantityValue(invoicedQuantity)}`,
-    `Pending Quantity: ${formatQuantityValue(pendingQuantity)}`,
+    `Ordered Quantity: ${formatQuantityValue(calculation.poQuantity, "N/A")}`,
+    `Invoiced Quantity: ${formatQuantityValue(calculation.invoicedQuantity, "N/A")}`,
+    `Pending Quantity: ${formatQuantityValue(calculation.pendingInvoiceQuantity, "N/A")}`,
     `Invoice Status: ${invoiceStatus}`,
   ].join("\n");
 }
@@ -519,35 +508,36 @@ function buildPendingInvoiceStatusRows({ poRows = [], rsegRows = [], poNo = "NUL
 
   const rsegByPoItem = new Map();
   for (const row of sourceRsegRows) {
+    const poNumber = normalizeNumericId(row?.purch_doc_no || row?.PoNo || row?.po_no || row?.EBELN || "", 10);
     const item = normalizeNumericId(
       row?.purch_item_no || row?.PoItem || row?.po_item || row?.EBELP || row?.invoice_item || row?.InvoiceItem || row?.BUZEI || "",
       5
     );
-    if (!item) continue;
+    if (!poNumber || !item) continue;
 
-    if (!rsegByPoItem.has(item)) {
-      rsegByPoItem.set(item, []);
+    const key = `${poNumber}:${item}`;
+    if (!rsegByPoItem.has(key)) {
+      rsegByPoItem.set(key, []);
     }
-    rsegByPoItem.get(item).push(row);
+    rsegByPoItem.get(key).push(row);
   }
 
-  const statusRows = sourcePoRows.map((row) => {
+  const calculations = calculatePendingInvoiceRows({ poRows: sourcePoRows, invoiceRows: sourceRsegRows });
+  const statusRows = sourcePoRows.map((row, index) => {
     const normalizedPoItem = normalizeNumericId(row?.PoItem || row?.po_item || row?.poItem || row?.EBELP || "", 5);
-    const matchingInvoices = normalizedPoItem ? (rsegByPoItem.get(normalizedPoItem) || []) : [];
-
-    const orderedQuantityValue = getPoOrderedQuantity(row);
-    const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
-    const invoicedQuantity = matchingInvoices.reduce((sum, item) => sum + (Number(item?.quantity || item?.InvoiceQuantity || item?.MENGE) || 0), 0);
-    const pendingQuantity = Math.max(orderedQuantity - invoicedQuantity, 0);
-    const invoiceStatus = matchingInvoices.length === 0 ? "Not Invoiced" : pendingQuantity > 0 ? "Pending" : "Completed";
+    const normalizedPoNumber = normalizeNumericId(row?.PoNo || row?.po_no || row?.EBELN || poNo || "", 10);
+    const matchingInvoices = normalizedPoNumber && normalizedPoItem ? (rsegByPoItem.get(`${normalizedPoNumber}:${normalizedPoItem}`) || []) : [];
+    const calculation = calculations[index];
+    const invoiceStatus = !calculation.valid ? "Invalid PO Quantity" : matchingInvoices.length === 0 ? "Not Invoiced" : !isZeroQuantity(calculation.pendingInvoiceQuantity) ? "Pending" : "Completed";
 
     return {
       poNumber: cleanText(row?.PoNo || row?.EBELN || poNo),
       poItem: cleanText(normalizedPoItem || row?.PoItem || row?.EBELP || "NULL"),
       material: cleanText(row?.MatNo || row?.material_no),
-      orderedQuantity,
-      invoicedQuantity,
-      pendingQuantity,
+      orderedQuantity: calculation.poQuantity,
+      invoicedQuantity: calculation.invoicedQuantity,
+      pendingQuantity: calculation.pendingInvoiceQuantity,
+      calculationStatus: calculation.valid ? "SUCCESS" : "INVALID_PO_QUANTITY",
       invoiceStatus,
     };
   });
@@ -582,9 +572,9 @@ function buildPendingInvoiceStatusSections({ poRow = {}, poRows = [], rsegRows =
           cleanText(row.poNumber),
           cleanText(row.poItem),
           cleanText(row.material),
-          formatQuantityValue(row.orderedQuantity),
-          formatQuantityValue(row.invoicedQuantity),
-          formatQuantityValue(row.pendingQuantity),
+          formatQuantityValue(row.orderedQuantity, "N/A"),
+          formatQuantityValue(row.invoicedQuantity, "N/A"),
+          formatQuantityValue(row.pendingQuantity, "N/A"),
           cleanText(row.invoiceStatus),
         ]),
       },
@@ -592,11 +582,8 @@ function buildPendingInvoiceStatusSections({ poRow = {}, poRows = [], rsegRows =
   }
 
   const rows = Array.isArray(rsegRows) ? rsegRows : [];
-  const orderedQuantityValue = getPoOrderedQuantity(poRow);
-  const orderedQuantity = Number(orderedQuantityValue ?? 0) || 0;
-  const invoicedQuantity = rows.reduce((sum, row) => sum + (Number(row?.quantity) || 0), 0);
-  const pendingQuantity = Math.max(orderedQuantity - invoicedQuantity, 0);
-  const invoiceStatus = rows.length === 0 ? "Not Invoiced" : pendingQuantity > 0 ? "Pending" : "Completed";
+  const calculation = calculatePendingInvoiceRows({ poRows: [poRow], invoiceRows: rows })[0];
+  const invoiceStatus = !calculation.valid ? "Invalid PO Quantity" : rows.length === 0 ? "Not Invoiced" : !isZeroQuantity(calculation.pendingInvoiceQuantity) ? "Pending" : "Completed";
 
   return [
     {
@@ -614,9 +601,9 @@ function buildPendingInvoiceStatusSections({ poRow = {}, poRows = [], rsegRows =
         cleanText(poRow?.PoNo || poNo),
         cleanText(poRow?.PoItem || poItem),
         cleanText(poRow?.MatNo || poRow?.material_no),
-        formatQuantityValue(orderedQuantityValue),
-        formatQuantityValue(invoicedQuantity),
-        formatQuantityValue(pendingQuantity),
+        formatQuantityValue(calculation.poQuantity),
+        formatQuantityValue(calculation.invoicedQuantity),
+        formatQuantityValue(calculation.pendingInvoiceQuantity),
         invoiceStatus,
       ]],
     },
@@ -1487,10 +1474,12 @@ export async function handleS4poChatStream({
   if (pendingInvoiceIntent) {
     const pendingContext = extractPendingInvoiceContext(query);
     const pendingPlan = getPendingInvoiceExecutionPlan();
+    const pendingScope = resolvePendingInvoiceScope(query);
     console.log("[PENDING_INVOICE_INTENT]");
     console.log(`User query: ${query}`);
     console.log(`Detected intent: ${pendingInvoiceIntent}`);
     console.log(`Execution plan: ${JSON.stringify(pendingPlan, null, 2)}`);
+    console.log("[PENDING_INVOICE_SCOPE]", pendingScope);
 
     const pendingFallbackIntent = buildFallbackPoService({
       systemId: requestedSystemId || effectiveServiceIntent?.systemId || "",
@@ -1531,77 +1520,55 @@ export async function handleS4poChatStream({
         itemPad: 5,
       };
 
-    const flowResult = await step("executePendingInvoiceStatus", async () => {
-      const lookupPoNumber = pendingContext.poNumber || effectiveServiceIntent?.docNumber || extracted.docNumber || "";
-      const poQuery = buildEntitySetQuery(poService.entitySet, {
-        $filter: `${poService.idField || "PoNo"} eq '${normalizeNumericId(lookupPoNumber, Number(poService.idPad) || 10)}'`,
-        $top: 50,
-      }, { maxTop: 200 });
-      const poResponse = await fetchFromSap({ system, service: poService, relativePath: poQuery }, sapAuth);
-      const poRows = toResultsArray(poResponse);
-      const targetPoNo = normalizeNumericId(
-        pendingContext.poNumber || effectiveServiceIntent?.docNumber || extracted.docNumber || "",
-        Number(poService.idPad) || 10
-      );
-      const hasExplicitPoItem = Boolean(String(pendingContext.poItem || "").trim());
-      const targetPoItem = hasExplicitPoItem
-        ? normalizeNumericId(String(pendingContext.poItem || ""), Number(poService.itemPad) || 5)
-        : "";
-      const matchingPoRows = poRows.filter((row) => {
-        const rowPoNo = normalizeNumericId(row?.PoNo || row?.po_no || row?.poNo || row?.EBELN || "", Number(poService.idPad) || 10);
-        return rowPoNo === targetPoNo;
-      });
-      const itemMatchedRows = targetPoItem
-        ? matchingPoRows.filter((row) => {
-            const rowPoItem = normalizeNumericId(row?.PoItem || row?.po_item || row?.poItem || row?.EBELP || "", Number(poService.itemPad) || 5);
-            return rowPoItem === targetPoItem;
-          })
-        : matchingPoRows;
-      const matchedPoRow =
-        [...itemMatchedRows]
-          .sort((left, right) => numericQuantity(getPoOrderedQuantity(right)) - numericQuantity(getPoOrderedQuantity(left)))[0] ||
-        [...matchingPoRows]
-          .sort((left, right) => numericQuantity(getPoOrderedQuantity(right)) - numericQuantity(getPoOrderedQuantity(left)))[0] ||
-        poRows[0] ||
-        {};
-      const extractedQuantity = getPoOrderedQuantity(matchedPoRow);
-      const poRow = {
-        ...matchedPoRow,
-        ...(extractedQuantity !== null ? { PO_Quantity: extractedQuantity } : {}),
-      };
+    const flowResult = await step("executePendingInvoiceStatus", () => executePendingInvoiceFlow({
+      system,
+      sapAuth,
+      poService,
+      rsegService,
+      scope: {
+        ...pendingScope,
+        poNumber: pendingScope.poNumber || pendingContext.poNumber || effectiveServiceIntent?.docNumber || extracted.docNumber || null,
+        poItem: pendingScope.poItem || pendingContext.poItem || effectiveServiceIntent?.docItem || extracted.docItem || null,
+      },
+      logger: console,
+    }));
 
-      const resolvedPoNo = normalizeNumericId(pendingContext.poNumber || poRow?.PoNo || poRow?.EBELN || effectiveServiceIntent?.docNumber || extracted.docNumber || "", Number(poService.idPad) || 10);
-      const resolvedPoItem = normalizeNumericId(pendingContext.poItem || poRow?.PoItem || poRow?.EBELP || effectiveServiceIntent?.docItem || extracted.docItem || "", Number(poService.itemPad) || 5);
+    if (!flowResult.ok) {
+      const errorReply = `Pending Invoice Status: ${flowResult.status}`;
+      sse.send("error", { ok: false, status: flowResult.status, message: errorReply, sessionId: String(session._id) });
+      return sse.end();
+    }
 
-      const rsegFilter = targetPoItem
-        ? `purch_doc_no eq '${resolvedPoNo}' and purch_item_no eq '${targetPoItem}'`
-        : `purch_doc_no eq '${resolvedPoNo}'`;
-      const rsegQuery = buildEntitySetQuery(rsegService.entitySet, {
-        $filter: rsegFilter,
-        $top: 200,
-      }, { maxTop: 200 });
-      const rsegResponse = await fetchFromSap({ system, service: rsegService, relativePath: rsegQuery }, sapAuth);
-      const rsegRows = toResultsArray(rsegResponse);
-
-      const statusRows = buildPendingInvoiceStatusRows({
-        poRows: hasExplicitPoItem ? (itemMatchedRows.length > 0 ? itemMatchedRows : matchingPoRows) : matchingPoRows,
-        rsegRows,
-        poNo: resolvedPoNo,
-      });
-
-      return {
+    if (flowResult.status === "PO_NOT_FOUND" || flowResult.status === "NO_PO_RECORDS_IN_DATE_RANGE") {
+      const noDataReply = `Pending Invoice Status: ${flowResult.status}`;
+      sse.send("reply", {
         ok: true,
-        poRows,
-        rsegRows,
-        poRow,
-        statusRows,
-        resolvedPoNo,
-        resolvedPoItem,
-      };
-    });
+        kind: "stream",
+        sessionId: String(session._id),
+        systemId: actualSystemId,
+        sapUser: effectiveSapUser,
+        reply: noDataReply,
+        summary: noDataReply,
+        data: { viewType: "pending_invoice_status", flow: flowResult, scope: flowResult.scope },
+      });
+      sse.send("done", { ok: true, sessionId: String(session._id) });
+      return sse.end();
+    }
+
+    const firstPoRow = flowResult.poRows?.[0] || {};
+    const resolvedPoNo = flowResult.scope.poNumber || firstPoRow?.PoNo || "";
+    const resolvedPoItem = flowResult.scope.poItem || "";
+    const flowStatusRows = buildPendingInvoiceStatusRows({ poRows: flowResult.poRows, rsegRows: flowResult.rsegRows, poNo: resolvedPoNo });
+    flowResult.poRow = firstPoRow;
+    flowResult.statusRows = flowStatusRows;
+    flowResult.resolvedPoNo = resolvedPoNo;
+    flowResult.resolvedPoItem = resolvedPoItem;
 
     const reply = buildPendingInvoiceStatusReply({
       poRow: flowResult.poRow,
+      poRows: flowResult.statusRows?.length > 0
+        ? flowResult.statusRows.map((row) => ({ PoNo: row.poNo, PoItem: row.poItem, PoQuantity: row.poQuantity }))
+        : flowResult.poRows,
       rsegRows: flowResult.rsegRows,
       poNo: flowResult.resolvedPoNo,
       poItem: flowResult.resolvedPoItem,
@@ -1609,9 +1576,7 @@ export async function handleS4poChatStream({
     const sections = buildPendingInvoiceStatusSections({
       poRow: flowResult.poRow,
       poRows: flowResult.statusRows?.length > 0
-        ? (flowResult.poRows || []).filter((row) =>
-            flowResult.statusRows.some((item) => cleanText(item.poItem) === cleanText(row?.PoItem || row?.poItem || row?.EBELP || ""))
-          )
+        ? flowResult.statusRows.map((row) => ({ PoNo: row.poNo, PoItem: row.poItem, PoQuantity: row.poQuantity }))
         : [],
       rsegRows: flowResult.rsegRows,
       poNo: flowResult.resolvedPoNo,
@@ -1639,6 +1604,10 @@ export async function handleS4poChatStream({
           poItem: flowResult.resolvedPoItem,
           pendingInvoiceStatus: reply,
           sections,
+          rows: flowResult.statusRows,
+          hasMore: Boolean(flowResult.hasMore),
+          nextPage: flowResult.nextPage || null,
+          totalCount: Number(flowResult.totalCount) || flowResult.statusRows?.length || 0,
         },
         suggestions: [
           `Show invoice details for PO ${flowResult.resolvedPoNo}`,
@@ -1671,6 +1640,10 @@ export async function handleS4poChatStream({
         poNo: flowResult.resolvedPoNo,
         poItem: flowResult.resolvedPoItem,
         sections,
+        rows: flowResult.statusRows,
+        hasMore: Boolean(flowResult.hasMore),
+        nextPage: flowResult.nextPage || null,
+        totalCount: Number(flowResult.totalCount) || flowResult.statusRows?.length || 0,
       },
     });
 

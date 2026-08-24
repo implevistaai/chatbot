@@ -89,8 +89,12 @@ function renderPieLegend({ payload = [], activeKey = "", onSelect = null }) {
   );
 }
 
-function renderPieSliceLabel({ cx = 0, cy = 0, midAngle = 0, innerRadius = 0, outerRadius = 0, percent = 0 }) {
-  if (!Number.isFinite(Number(percent)) || Number(percent) <= 0) return null;
+function renderPieSliceLabel({ cx = 0, cy = 0, midAngle = 0, innerRadius = 0, outerRadius = 0, percent = 0, payload = null }) {
+  const displayPercentage = Number.isFinite(Number(payload?.percentage))
+    ? Number(payload.percentage)
+    : Math.round(Number(percent) * 100);
+
+  if (!Number.isFinite(displayPercentage) || displayPercentage <= 0) return null;
 
   const RADIAN = Math.PI / 180;
   const startRadius = Number(innerRadius) + (Number(outerRadius) - Number(innerRadius)) * 0.55;
@@ -111,7 +115,7 @@ function renderPieSliceLabel({ cx = 0, cy = 0, midAngle = 0, innerRadius = 0, ou
         dominantBaseline="central"
         style={{ fontSize: 12, fontWeight: 600 }}
       >
-        {`${Math.round(Number(percent) * 100)}%`}
+        {`${displayPercentage}%`}
       </text>
       <path
         d={`M${startX},${startY} L${endX},${endY}`}
@@ -1003,6 +1007,58 @@ function buildStatusChartFromRows(data) {
   };
 }
 
+function buildPendingPoSupplierDistribution(rows = []) {
+  const buckets = new Map();
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const supplier = String(row?.supplier || "Unknown Supplier").trim() || "Unknown Supplier";
+    const pendingQty = Number(String(row?.pendingQty ?? 0).replace(/,/g, ""));
+
+    if (!Number.isFinite(pendingQty) || pendingQty <= 0) continue;
+    buckets.set(supplier, (buckets.get(supplier) || 0) + pendingQty);
+  }
+
+  const totalPendingQty = [...buckets.values()].reduce((sum, quantity) => sum + quantity, 0);
+  if (totalPendingQty <= 0) return null;
+
+  const colors = ["#1565C0", "#2E7D32", "#EF6C00", "#6A1B9A", "#00838F", "#C62828", "#5D4037", "#616161"];
+  const entries = [...buckets.entries()].map(([supplier, quantity], index) => ({
+    status: supplier,
+    count: quantity,
+    exactPercentage: (quantity / totalPendingQty) * 100,
+    color: colors[index % colors.length],
+  }));
+  const minimumPercentages = entries.map((entry) => (entry.exactPercentage > 0 ? 1 : 0));
+  const percentages = entries.map((entry, index) => {
+    const basePercentage = Math.floor(entry.exactPercentage);
+    const allocatedMinimum = minimumPercentages[index];
+    return Math.max(basePercentage, allocatedMinimum);
+  });
+  let remainingPercentage = 100 - percentages.reduce((sum, value) => sum + value, 0);
+
+  if (remainingPercentage > 0) {
+    [...entries]
+      .sort((left, right) => (right.exactPercentage % 1) - (left.exactPercentage % 1))
+      .forEach((entry) => {
+        if (remainingPercentage <= 0) return;
+        const index = entries.indexOf(entry);
+        percentages[index] += 1;
+        remainingPercentage -= 1;
+      });
+  }
+
+  return {
+    title: "Pending PO Quantity by Supplier",
+    totalPendingQty,
+    data: entries.map((entry, index) => ({
+      status: entry.status,
+      count: entry.count,
+      percentage: percentages[index],
+      color: entry.color,
+    })),
+  };
+}
+
 function normalizeSolmanStatus(value = "") {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -1146,14 +1202,15 @@ function ProcurementSectionCard({ section, sectionIndex, visibleProcurementSecti
   const sectionTitle = String(section?.title || `Section ${sectionIndex + 1}`).trim();
   const sectionTitleKey = sectionTitle.toLowerCase();
   const isMaterialDocumentSection = sectionTitleKey.includes("material document");
+  const isPendingInvoiceSection = sectionTitleKey.includes("pending invoice status");
   const isPurchaseSummarySection = sectionTitleKey.includes("purchase document summary");
   const rows = Array.isArray(section?.rows) ? section.rows : [];
   const sectionKey = `${sectionTitleKey}-${sectionIndex}`;
-  const visibleRowCount = isMaterialDocumentSection
+  const visibleRowCount = isMaterialDocumentSection || isPendingInvoiceSection
     ? Number(visibleProcurementSectionRows?.[sectionKey] || INITIAL_PROCUREMENT_SECTION_BATCH_SIZE)
     : rows.length;
-  const visibleRows = isMaterialDocumentSection ? rows.slice(0, visibleRowCount) : rows;
-  const hasMoreRows = isMaterialDocumentSection && rows.length > visibleRows.length;
+  const visibleRows = isMaterialDocumentSection || isPendingInvoiceSection ? rows.slice(0, visibleRowCount) : rows;
+  const hasMoreRows = (isMaterialDocumentSection || isPendingInvoiceSection) && rows.length > visibleRows.length;
 
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
@@ -1354,6 +1411,7 @@ export default function MessageBubble({
   const safeSuggestions = Array.isArray(suggestions) ? suggestions : [];
   const isPendingInvoiceResponse = data?.viewType === "pending_invoice_status";
   const isPendingPoListResponse = data?.viewType === "pending_po_list";
+  const isPendingInvoicePagedResponse = isPendingInvoiceResponse && Array.isArray(data?.rows) && typeof data?.hasMore === "boolean";
   const pendingPoRequestContext = data?.requestContext && typeof data.requestContext === "object"
     ? data.requestContext
     : {};
@@ -1371,6 +1429,7 @@ export default function MessageBubble({
   const [procurementDetailError, setProcurementDetailError] = useState("");
   const procurementDetailRequestRef = useRef(0);
   const [pendingPoRows, setPendingPoRows] = useState(initialPendingPoRows);
+  const [selectedPendingPoSupplier, setSelectedPendingPoSupplier] = useState("");
   const [pendingPoHasMore, setPendingPoHasMore] = useState(Boolean(data?.hasMore));
   const [pendingPoNextPage, setPendingPoNextPage] = useState(data?.nextPage || null);
   const [pendingPoLoadMoreLoading, setPendingPoLoadMoreLoading] = useState(false);
@@ -1401,6 +1460,17 @@ export default function MessageBubble({
   }, [data?.viewType, safeSummary, summary, text, isPendingInvoiceResponse]);
 
   useEffect(() => {
+    if (!isPendingInvoicePagedResponse) return;
+
+    setPendingPoRows(Array.isArray(data?.rows) ? data.rows : []);
+    setPendingPoHasMore(Boolean(data?.hasMore));
+    setPendingPoNextPage(data?.nextPage || null);
+    setPendingPoLoadMoreLoading(false);
+    setPendingPoLoadMoreError("");
+    pendingPoLoadMoreLockRef.current = false;
+  }, [data?.hasMore, data?.nextPage, data?.rows, isPendingInvoicePagedResponse]);
+
+  useEffect(() => {
     const media = window.matchMedia("(max-width: 640px)");
     const update = (event) => {
       setIsSmallScreen(Boolean(event?.matches));
@@ -1429,6 +1499,7 @@ export default function MessageBubble({
     if (!isPendingPoListResponse) return;
 
     setPendingPoRows(Array.isArray(data?.rows) ? data.rows : []);
+    setSelectedPendingPoSupplier("");
     setPendingPoHasMore(Boolean(data?.hasMore));
     setPendingPoNextPage(data?.nextPage || null);
     setPendingPoLoadMoreLoading(false);
@@ -2681,7 +2752,11 @@ export default function MessageBubble({
 
   if (isPendingPoListResponse) {
     const tableColumns = ["PO No.", "Supplier", "PO Qty", "Delivered", "Pending Qty", "Status"];
-    const tableRows = (Array.isArray(pendingPoRows) ? pendingPoRows : []).map((row) => [
+    const visiblePendingPoRows = (Array.isArray(pendingPoRows) ? pendingPoRows : []).filter((row) => {
+      if (!selectedPendingPoSupplier) return true;
+      return String(row?.supplier || "Unknown Supplier").trim() === selectedPendingPoSupplier;
+    });
+    const tableRows = visiblePendingPoRows.map((row) => [
       String(row?.poNo || "-").trim() || "-",
       String(row?.supplier || "-").trim() || "-",
       String(row?.poQty || "0.000").trim() || "0.000",
@@ -2690,6 +2765,23 @@ export default function MessageBubble({
       String(row?.status || "Pending").trim() || "Pending",
     ]);
     const hasRows = tableRows.length > 0;
+    const supplierChart = buildPendingPoSupplierDistribution(pendingPoRows);
+    const supplierChartData = Array.isArray(supplierChart?.data) ? supplierChart.data : [];
+    const selectedSupplierIndex = supplierChartData.findIndex(
+      (entry) => entry.status === selectedPendingPoSupplier
+    );
+    const handlePendingSupplierSelect = (supplierOrEntry) => {
+      const supplier = String(
+        typeof supplierOrEntry === "string" ? supplierOrEntry : supplierOrEntry?.status || ""
+      ).trim();
+
+      if (!supplier) return;
+      setSelectedPendingPoSupplier((current) => current === supplier ? "" : supplier);
+    };
+    const handlePendingSupplierChartClick = (entry, index) => {
+      const payload = entry?.payload || supplierChartData[index] || (Array.isArray(entry) ? entry[0]?.payload || entry[0] : entry);
+      handlePendingSupplierSelect(payload);
+    };
 
     return (
       <div className="flex items-start justify-start gap-3 w-full">
@@ -2707,6 +2799,78 @@ export default function MessageBubble({
                 {`Date Range: ${String(data?.dateFrom || pendingPoRequestContext?.dateFrom || "-")} to ${String(data?.dateTo || pendingPoRequestContext?.dateTo || "-")}`}
               </div>
             </div>
+
+            {supplierChartData.length > 0 ? (
+              <div className="border-b border-blue-100 bg-white">
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">{supplierChart.title}</div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    {`Total pending quantity: ${supplierChart.totalPendingQty.toLocaleString(undefined, { maximumFractionDigits: 3 })}`}
+                  </div>
+                </div>
+
+                <div className="h-[13rem] w-full px-1 pb-1 pt-1 sm:h-[15rem]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart margin={{ top: 0, right: 10, bottom: 0, left: 10 }}>
+                      <Pie
+                        data={supplierChartData}
+                        dataKey="count"
+                        nameKey="status"
+                        innerRadius={isSmallScreen ? 40 : 54}
+                        outerRadius={isSmallScreen ? 66 : 82}
+                        paddingAngle={3}
+                        label={renderPieSliceLabel}
+                        labelLine={false}
+                        activeIndex={selectedSupplierIndex >= 0 ? selectedSupplierIndex : undefined}
+                        onClick={handlePendingSupplierChartClick}
+                      >
+                        {supplierChartData.map((entry, index) => (
+                          <Cell
+                            key={`supplier-cell-${entry.status}-${index}`}
+                            fill={entry.color}
+                            opacity={selectedPendingPoSupplier && selectedPendingPoSupplier !== entry.status ? 0.3 : 1}
+                            stroke={selectedPendingPoSupplier === entry.status ? "#0f172a" : "#ffffff"}
+                            strokeWidth={selectedPendingPoSupplier === entry.status ? 3 : 1}
+                            style={{ cursor: "pointer" }}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        formatter={(value, name, props) => [
+                          `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 })} (${props?.payload?.percentage}%)`,
+                          props?.payload?.status || name,
+                        ]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="border-t border-slate-200 bg-white px-1 pb-1 pt-1">
+                  {renderPieLegend({
+                    payload: supplierChartData.map((entry) => ({
+                      value: entry.status,
+                      color: entry.color,
+                      payload: entry,
+                    })),
+                    activeKey: selectedPendingPoSupplier,
+                    onSelect: handlePendingSupplierSelect,
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {selectedPendingPoSupplier ? (
+              <div className="flex items-center justify-between gap-3 border-b border-blue-100 bg-blue-50 px-4 py-2 text-xs text-blue-900">
+                <span>{`Showing pending POs for ${selectedPendingPoSupplier}`}</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPendingPoSupplier("")}
+                  className="font-semibold underline underline-offset-2 hover:text-blue-700"
+                >
+                  Show all suppliers
+                </button>
+              </div>
+            ) : null}
 
             {!hasRows ? (
               <div className="px-4 py-6 text-sm text-slate-700">No pending purchase orders found for the selected period.</div>
