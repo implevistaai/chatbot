@@ -49,6 +49,11 @@ function getDeploymentOwner(baseOwner = "local") {
   return scope ? `${baseOwner}:${scope}` : baseOwner;
 }
 
+function cleanString(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
 function buildFallbackPoService(serviceIntent) {
   const keys = Array.isArray(serviceIntent?.keys)
     ? serviceIntent.keys.map((key) => String(key || "").trim()).filter(Boolean)
@@ -69,7 +74,7 @@ function buildFallbackPoService(serviceIntent) {
 }
 
 function buildDocumentFlowServiceIntent({ query, serviceIntent, systemId, serviceIntentFallback }) {
-  const documentFlowIntent = detectDocumentFlowIntent(query);
+  const documentFlowIntent = detectDocumentFlowIntent(query) || cleanString(serviceIntent?.collected?.documentFlowIntent || serviceIntent?.entities?.documentFlowIntent || serviceIntent?.documentFlowIntent || "") || null;
   if (!documentFlowIntent) return serviceIntent;
 
   if (serviceIntent?.matchFound && serviceIntent?.serviceName && serviceIntent?.entitySet) {
@@ -279,11 +284,75 @@ function buildProcurementFlowReply({
   const accounting = Array.isArray(acdocaRows) ? acdocaRows[0] || {} : {};
 
   const normalizedIntent = String(documentFlowIntent || "COMPLETE_DOCUMENT_FLOW").trim().toUpperCase();
+  const allowPricing = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "PRICING_DETAILS";
   const allowMaterial = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "MATERIAL_DOCUMENT";
   const allowInvoice = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "INVOICE_DETAILS";
   const allowAccounting = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "ACCOUNTING_DOCUMENT";
 
   const sections = [];
+
+  if (normalizedIntent === "PRICING_DETAILS") {
+    if (poRows.length > 0) {
+      sections.push(
+        buildTable("Pricing Details", [
+          ["PO Number", cleanText(primary.PoNo || poNo)],
+          ["PO Item", cleanText(primary.PoItem || poItem)],
+          ["Net Price", cleanText(primary.NetPrice || primary.net_price || primary.price || primary.NetAmount || primary.net_value)],
+          ["Net Value", cleanText(primary.NetValue || primary.net_value || primary.net_amount || primary.TotalNetValue || primary.TotalAmount)],
+          ["Quantity", cleanText(primary.PO_Quantity || primary.PoQuantity || primary.Menge || primary.Quantity)],
+          ["Currency", cleanText(primary.CurKey || primary.Currency || primary.currency || primary.CurrencyKey)],
+        ])
+      );
+    }
+
+    return sections.filter(Boolean).join("\n\n");
+  }
+
+  if (normalizedIntent === "INVOICE_DETAILS") {
+    if (invoiceRows.length > 0) {
+      sections.push(
+        buildTable("Invoice Details", [
+          ["Invoice Number", cleanText(invoice.acc_doc_no || invoice.BELNR)],
+          ["Fiscal Year", cleanText(invoice.fiscal_year || invoice.GJAHR)],
+          ["Invoice Item", cleanText(invoice.invoice_item || invoice.InvoiceItem || invoice.BUZEI)],
+          ["Quantity", cleanText(invoice.quantity || invoice.InvoiceQuantity || invoice.MENGE)],
+          ["Invoice Amount", cleanText(invoice.inv_amt_supplier || invoice.InvoiceAmount || invoice.amt_doc_curr)],
+          ["Supplier Account", cleanText(invoice.supplier_acc_no || invoice.SupplierAccountNumber)],
+        ])
+      );
+    }
+
+    if (rbkpRows.length > 0) {
+      sections.push(
+        buildTable("Invoice Header", [
+          ["Invoice Document", cleanText(header.invoice_doc_no || header.BELNR || header.InvoiceDocNo)],
+          ["Fiscal Year", cleanText(header.fiscal_year || header.GJAHR)],
+          ["Company Code", cleanText(header.company_code || header.BUKRS)],
+          ["Invoice Party", cleanText(header.invoice_party || header.Supplier || header.LIFNR)],
+          ["Gross Amount", cleanText(header.gross_amount || header.WRBTR)],
+        ])
+      );
+    }
+
+    return sections.filter(Boolean).join("\n\n");
+  }
+
+  if (normalizedIntent === "ACCOUNTING_DOCUMENT") {
+    if (acdocaRows.length > 0) {
+      sections.push(
+        buildTable("Accounting Details", [
+          ["Accounting Document Number", cleanText(accounting.doc_no_acctng_doc || accounting.AccountingDocument || accounting.BELNR)],
+          ["Company Code", cleanText(accounting.company_code || accounting.BUKRS)],
+          ["Account Number", cleanText(accounting.account_no || accounting.GLAccount || accounting.HKONT)],
+          ["Supplier Account", cleanText(accounting.supplier_acc_no || accounting.SupplierAccountNumber)],
+          ["Material Number", cleanText(accounting.material_no || accounting.MATNR)],
+          ["Amount", cleanText(accounting.amt_company || accounting.Amount || accounting.WRBTR)],
+        ])
+      );
+    }
+
+    return sections.filter(Boolean).join("\n\n");
+  }
 
   function buildTable(title, rows) {
     const visibleRows = (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row) && row.length > 0);
@@ -375,6 +444,27 @@ function buildProcurementFlowSections({
   const allowInvoice = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "INVOICE_DETAILS";
   const allowAccounting = normalizedIntent === "COMPLETE_DOCUMENT_FLOW" || normalizedIntent === "ACCOUNTING_DOCUMENT";
 
+  if (normalizedIntent === "PRICING_DETAILS") {
+    if (poRows.length > 0) {
+      return [
+        {
+          title: "Pricing Details",
+          columns: ["PO Number", "PO Item", "Net Price", "Net Value", "Quantity", "Currency"],
+          rows: (Array.isArray(poRows) && poRows.length > 0 ? poRows : [primary]).map((row) => [
+            cleanText(row?.PoNo || poNo),
+            cleanText(row?.PoItem || poItem),
+            cleanText(row?.NetPrice || row?.net_price || row?.price || row?.NetAmount || row?.net_value),
+            cleanText(row?.NetValue || row?.net_value || row?.net_amount || row?.TotalNetValue || row?.TotalAmount),
+            cleanText(row?.PO_Quantity || row?.PoQuantity || row?.Menge || row?.Quantity),
+            cleanText(row?.CurKey || row?.Currency || row?.currency || row?.CurrencyKey),
+          ]),
+        },
+      ];
+    }
+
+    return [];
+  }
+
   const sections = [
     {
       title: "Purchase Document Summary",
@@ -387,6 +477,57 @@ function buildProcurementFlowSections({
       ]),
     },
   ];
+
+  if (normalizedIntent === "INVOICE_DETAILS") {
+    return [
+      ...(invoiceRows.length > 0
+        ? [{
+            title: "Invoice Details",
+            columns: ["Invoice Number", "Fiscal Year", "Invoice Item", "Quantity", "Invoice Amount", "Supplier Account"],
+            rows: invoiceRows.map((row) => [
+              cleanText(row?.acc_doc_no || row?.BELNR),
+              cleanText(row?.fiscal_year || row?.GJAHR),
+              cleanText(row?.invoice_item || row?.InvoiceItem || row?.BUZEI),
+              cleanText(row?.quantity || row?.InvoiceQuantity || row?.MENGE),
+              cleanText(row?.inv_amt_supplier || row?.InvoiceAmount || row?.amt_doc_curr),
+              cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+            ]),
+          }]
+        : []),
+      ...(rbkpRows.length > 0
+        ? [{
+            title: "Invoice Header",
+            columns: ["Invoice Document", "Fiscal Year", "Company Code", "Invoice Party", "Gross Amount"],
+            rows: rbkpRows.map((row) => [
+              cleanText(row?.invoice_doc_no || row?.BELNR || row?.InvoiceDocNo),
+              cleanText(row?.fiscal_year || row?.GJAHR),
+              cleanText(row?.company_code || row?.BUKRS),
+              cleanText(row?.invoice_party || row?.Supplier || row?.LIFNR),
+              cleanText(row?.gross_amount || row?.WRBTR),
+            ]),
+          }]
+        : []),
+    ];
+  }
+
+  if (normalizedIntent === "ACCOUNTING_DOCUMENT") {
+    return acdocaRows.length > 0
+      ? [
+          {
+            title: "Accounting Details",
+            columns: ["Accounting Document Number", "Company Code", "Account Number", "Supplier Account", "Material Number", "Amount"],
+            rows: acdocaRows.map((row) => [
+              cleanText(row?.doc_no_acctng_doc || row?.AccountingDocument || row?.BELNR),
+              cleanText(row?.company_code || row?.BUKRS),
+              cleanText(row?.account_no || row?.GLAccount || row?.HKONT),
+              cleanText(row?.supplier_acc_no || row?.SupplierAccountNumber),
+              cleanText(row?.material_no || row?.MATNR),
+              cleanText(row?.amt_company || row?.Amount || row?.WRBTR),
+            ]),
+          },
+        ]
+      : [];
+  }
 
   if (allowMaterial && materialRows.length > 0) {
     sections.push({
@@ -812,7 +953,6 @@ function generateSuggestions(query, extracted, rows) {
       `show next ${nextSize} po`,
       docNumber ? `Show items of document ${docNumber}` : "Show document items",
       docNumber ? `Track document ${docNumber}` : "Track this document",
-      "Show vendor details",
     ];
   }
 
@@ -1669,7 +1809,12 @@ export async function handleS4poChatStream({
   }
 
   const documentFlowIntent = detectDocumentFlowIntent(query);
-  const flowRequested = isPurchaseOrderFlowRequest(query, extracted) || documentFlowIntent === "INVOICE_DETAILS";
+  const isPoDetailRequest = String(serviceIntent?.intent || "").trim() === "get_purchase_order_details" || String(serviceIntent?.operation || "").trim().toLowerCase() === "detail";
+  const isPricingDetailRequest = documentFlowIntent === "PRICING_DETAILS";
+  const isAccountingDetailRequest = documentFlowIntent === "ACCOUNTING_DOCUMENT";
+  const isMaterialDetailRequest = documentFlowIntent === "MATERIAL_DOCUMENT";
+  const isInvoiceDetailRequest = documentFlowIntent === "INVOICE_DETAILS";
+  const flowRequested = isPricingDetailRequest || isAccountingDetailRequest || isMaterialDetailRequest || isInvoiceDetailRequest || (!isPoDetailRequest && isPurchaseOrderFlowRequest(query, extracted));
   if (flowRequested) {
     const normalizedDocumentFlowIntent = documentFlowIntent || "COMPLETE_DOCUMENT_FLOW";
     const flowServices = await step("load Purchase Order Flow Service Maps", async () =>

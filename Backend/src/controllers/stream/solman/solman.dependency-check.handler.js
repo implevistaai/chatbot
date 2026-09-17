@@ -68,17 +68,31 @@ function buildDependencyTableRows(result = {}) {
     ? result.dependencies.filter(Boolean)
     : [];
 
-  return dependencies.map((item) => ({
-    originalTransport: sourceTransports[0] || cleanString(item?.transportEntered) || "-",
-    dependentTransport: cleanString(item?.dependentTransport) || "-",
-    description: cleanString(item?.description) || "-",
-    status: cleanString(item?.status) || "-",
-    owner: cleanString(item?.owner) || "-",
-    exportDate: cleanString(item?.exportDate) || "-",
-    exportTime: cleanString(item?.exportTime) || "-",
-    importDate: cleanString(item?.importDate) || "-",
-    importTime: cleanString(item?.importTime) || "-",
-  }));
+  if (dependencies.length === 0 && sourceTransports.length > 0) {
+    return sourceTransports.map((transport) => [
+      String(transport || "-").trim() || "-",
+      String(transport || "-").trim() || "-",
+      `Found ${sourceTransports.length} transport(s) for this CR.`,
+      "-",
+      "-",
+      "-",
+      "-",
+      "-",
+      "-",
+    ]);
+  }
+
+  return dependencies.map((item) => [
+    sourceTransports[0] || cleanString(item?.transportEntered) || "-",
+    cleanString(item?.dependentTransport) || "-",
+    cleanString(item?.description) || "-",
+    cleanString(item?.status) || "-",
+    cleanString(item?.owner) || "-",
+    cleanString(item?.exportDate) || "-",
+    cleanString(item?.exportTime) || "-",
+    cleanString(item?.importDate) || "-",
+    cleanString(item?.importTime) || "-",
+  ]);
 }
 
 export async function handleDependencyCheck(context) {
@@ -270,10 +284,8 @@ export async function handleDependencyCheck(context) {
   }
 
   const reply = formatDependencyCheckReply(result.result);
-  const dependencies = Array.isArray(result?.result?.dependencies)
-    ? result.result.dependencies.filter(Boolean)
-    : [];
   const tableRows = buildDependencyTableRows(result.result);
+  const dependencies = tableRows;
 
   await persistAssistantAndTouchSession({
     owner,

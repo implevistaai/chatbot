@@ -229,15 +229,23 @@ async function resolveCrProcessType({ system, sapAuth, changeRequestId }) {
   const cleanCr = cleanString(changeRequestId);
   if (!cleanCr) return "";
 
+  const serviceMapping = await resolveSolmanCrCatalog({
+    owner: sapAuth?.owner || "local",
+    systemId: system?.systemId,
+    serviceName: resolveCrDetailsServiceName(),
+  });
+  const serviceName = cleanString(serviceMapping?.serviceName) || resolveCrDetailsServiceName();
+  const entitySetName = cleanString(serviceMapping?.entitySetName) || resolveTransportFallbackEntitySet(serviceName);
+
   try {
-    const relativePath = `/sap/opu/odata/sap/ZCR_DETAILS_SRV/ZEX_OutputSet?$filter=${encodeURIComponent(
+    const relativePath = `/sap/opu/odata/sap/${serviceName}/${entitySetName}?$filter=${encodeURIComponent(
       `OBJECT_ID eq '${escapeODataString(cleanCr)}'`
     )}`;
 
     const raw = await fetchFromSap(
       {
         system,
-        service: { serviceName: "ZCR_DETAILS_SRV" },
+        service: { serviceName },
         relativePath,
       },
       sapAuth
@@ -712,6 +720,31 @@ export async function getDependentTransportsFromCr({
     };
   }
 
+  const transportRows = (Array.isArray(trResult?.result?.rows) ? trResult.result.rows : []).filter(Boolean);
+  const dependencyRows = transportRows.length > 0
+    ? transportRows.map((row) => ({
+        transportEntered: cleanString(row?.Trkorr) || cleanString(row?.Transport) || cleanString(row?.TRANSPORT) || cleanString(sourceTransports[0]) || cleanCr,
+        dependentTransport: cleanString(row?.Trkorr) || cleanString(row?.Transport) || cleanString(row?.TRANSPORT) || cleanString(sourceTransports[0]) || cleanCr,
+        description: cleanString(row?.Desc) || cleanString(row?.TrfuncDescription) || cleanString(row?.Message) || `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
+        status: cleanString(row?.Trfunction) || cleanString(row?.Status) || "",
+        owner: cleanString(row?.Owner) || cleanString(row?.TaskOwner) || "",
+        exportDate: cleanString(row?.DevReleasedDate) || cleanString(row?.DevCreatedDate) || "",
+        exportTime: cleanString(row?.DevReleasedTime) || cleanString(row?.DevCreatedTime) || "",
+        importDate: cleanString(row?.TaskExdate) || "",
+        importTime: cleanString(row?.TaskExtime) || "",
+      }))
+    : sourceTransports.map((transport) => ({
+        transportEntered: cleanString(transport) || cleanCr,
+        dependentTransport: cleanString(transport) || cleanCr,
+        description: `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
+        status: "",
+        owner: "",
+        exportDate: "",
+        exportTime: "",
+        importDate: "",
+        importTime: "",
+      }));
+
   return {
     ok: true,
     message: `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
@@ -719,8 +752,8 @@ export async function getDependentTransportsFromCr({
       changeRequestId: cleanCr,
       processType: trResult?.result?.processType || null,
       sourceTransports,
-      dependencyMessage: "",
-      dependencies: [],
+      dependencyMessage: `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
+      dependencies: dependencyRows,
       raw: {
         transportLookup: trResult?.result?.raw || null,
         dependencyLookup: null,

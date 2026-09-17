@@ -977,9 +977,9 @@ const isConnected = useMemo(() => {
       />
 
       {isConnected && (
-        <footer className="sticky bottom-0 bg-white px-4 py-3 border-t border-gray-200 flex-shrink-0">
-          <div className="mx-auto max-w-4xl">
-            <div className="rounded-2xl border border-gray-300 bg-gray-100 p-3">
+        <footer className="sticky bottom-0 z-10 flex-shrink-0 border-t border-slate-200/80 bg-white/95 px-4 py-4 backdrop-blur-md sm:px-6 lg:px-8">
+          <div className="mx-auto w-full max-w-6xl">
+            <div className="rounded-[1.75rem] border border-slate-200 bg-white px-4 py-2.5 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:px-5 sm:py-3">
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -987,16 +987,16 @@ const isConnected = useMemo(() => {
                   submitComposerMessage("submit");
                 }}
               >
-                <div className="flex items-end gap-2">
+                <div className="flex items-end gap-2 sm:gap-3">
                   <button
                     type="button"
                     onClick={onMicClick}
                     disabled={!canInteract}
                     className={classNames(
-                      "rounded-xl px-3 py-2 border transition flex items-center justify-center",
+                      "flex h-11 w-11 items-center justify-center rounded-full border transition",
                       listening
-                        ? "bg-rose-600 text-white border-rose-500 hover:bg-rose-700"
-                        : "bg-white text-zinc-700 border-gray-300 hover:bg-gray-200",
+                        ? "border-rose-500 bg-rose-600 text-white shadow-sm hover:bg-rose-700"
+                        : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100",
                       !canInteract && "opacity-50 cursor-not-allowed"
                     )}
                     title={listening ? "Stop microphone" : "Start microphone"}
@@ -1008,22 +1008,29 @@ const isConnected = useMemo(() => {
                     )}
                   </button>
 
-                  <textarea
-                    ref={inputRef}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={onComposerKeyDown}
-                    rows={2}
-                    placeholder={canInteract ? "Start type a message… " : "Click Connect to start chatting…"}
-                    disabled={!canInteract}
-                    className="flex-1 resize-none rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-zinc-800 placeholder:text-zinc-500 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-400/30 disabled:bg-gray-100 disabled:text-gray-400"
-                  />
+                  <div className="flex-1 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 px-4 py-2.5 transition focus-within:border-blue-500 focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10">
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={onComposerKeyDown}
+                      rows={1}
+                      placeholder={canInteract ? "Ask anything about the connected SAP systems…" : "Click Connect to start chatting…"}
+                      disabled={!canInteract}
+                      className="max-h-32 min-h-[40px] w-full resize-none border-0 bg-transparent text-sm leading-5 text-slate-900 outline-none placeholder:text-slate-400 disabled:text-slate-400"
+                    />
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                      <span className="rounded-full bg-white px-2.5 py-1 shadow-sm ring-1 ring-slate-200">Enter to send</span>
+                      <span className="rounded-full bg-white px-2.5 py-1 shadow-sm ring-1 ring-slate-200">Shift+Enter for new line</span>
+                    </div>
+                  </div>
 
                   {loading ? (
                     <button
                       type="button"
                       onClick={() => onStop?.()}
-                      className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 flex items-center gap-2"
+                      className="flex h-11 items-center gap-2 rounded-full bg-rose-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700"
                       title="Stop generating"
                     >
                       <FiSquare className="text-lg" />
@@ -1032,7 +1039,7 @@ const isConnected = useMemo(() => {
                   ) : (
                     <button
                       disabled={!canInteract || !String(input || "").trim()}
-                      className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
+                      className="flex h-11 items-center gap-2 rounded-full bg-slate-900 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                       type="submit"
                       title="Send"
                     >

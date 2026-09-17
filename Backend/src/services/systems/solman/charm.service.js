@@ -769,7 +769,7 @@ export async function getSolmanChangeRequestDetailsById({
   let usedProcessType = requestedProcessType || "";
 
   for (const candidateProcessType of processTypeCandidates) {
-    const relativePath = `/sap/opu/odata/sap/ZCR_DETAILS_SRV/ZEX_OutputSet?$filter=${encodeURIComponent(
+    const relativePath = `/sap/opu/odata/sap/${serviceName}/${entitySetName}?$filter=${encodeURIComponent(
       `OBJECT_ID eq '${escapeODataString(cleanObjectId)}' and PROCESS_TYPE eq '${escapeODataString(candidateProcessType)}'`
     )}`;
 
@@ -791,7 +791,7 @@ export async function getSolmanChangeRequestDetailsById({
   }
 
   if (results.length === 0) {
-    const relativePath = `/sap/opu/odata/sap/ZCR_DETAILS_SRV/ZEX_OutputSet?$filter=${encodeURIComponent(
+    const relativePath = `/sap/opu/odata/sap/${serviceName}/${entitySetName}?$filter=${encodeURIComponent(
       `OBJECT_ID eq '${escapeODataString(cleanObjectId)}'`
     )}`;
 

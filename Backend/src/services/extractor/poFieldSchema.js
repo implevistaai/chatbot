@@ -21,7 +21,7 @@ export const PO_FIELD_LABELS = {
   PoNo: "Purchase Order Number",
   PoItem: "Purchase Order Item",
   MatNo: "Material Number",
-  SuppAcoutNo: "Supplier Account Number",
+  SuppAcoutNo: "Supplier",
   CompanyCode: "Company Code",
   NetPrice: "Net Price",
   Menge: "Quantity",
@@ -34,6 +34,7 @@ export const PO_FIELD_LABELS = {
   Plant: "Plant",
   StrLoc: "Storage Location",
   MatGrp: "Material Group",
+  NoForDocCond: "Doc Condition",
 };
 
 export function getPoAllowlistFallback() {

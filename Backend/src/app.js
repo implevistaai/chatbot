@@ -33,7 +33,7 @@ app.use(
       "http://127.0.0.1:5175",
       "http://localhost:5176",
       "http://127.0.0.1:5176",
-      "http://192.168.1.110:5173",
+      "http://192.168.1.59:5173",
     ],
     credentials: true,
     exposedHeaders: ["x-access-token", "x-auth-refreshed"],

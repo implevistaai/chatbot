@@ -144,16 +144,11 @@ function detectListChangeRequestIntent(query = "") {
     /cr details\b/i.test(q) ||
     /all change request details\b/i.test(q);
 
-  if (detailCue) {
-    return false;
-  }
-
   return hasRetrievalVerb(q) || hasListFilterCue(q) || /\bshow\s+my\s+crs?\b/i.test(q) || /\bcreated\s+by\s+me\b/i.test(q) || /\bopen\s+crs?\b/i.test(q) || /\bclosed\s+crs?\b/i.test(q) || /\bpending\s+crs?\b/i.test(q) || /\brejected\s+crs?\b/i.test(q) || /\bapproved\s+crs?\b/i.test(q);
 }
 
 function detectCreateTransportTaskIntent(query = "") {
   const q = normalizeRoutingQuery(query);
-  if (!q) return false;
 
   const createTaskPattern = /\b(?:create|add)\b[\s\S]{0,40}\b(?:task|tasks)\b/i;
   const explicitCrCreation = /\b(?:create|raise|submit|open|initiate|start|generate|make|request)\b[\s\S]{0,40}\b(?:change request|change requests?|crs?|cr's)\b/i;
@@ -754,6 +749,19 @@ function keywordFallback(query) {
       reason: "Matched explicit SolMan change request keywords",
       source: "keyword",
       entities: normalizeEntitiesByIntent("create_change_request", {}, query),
+    });
+  }
+
+  if (/(show|get|view|display|fetch).*(accounting details|account details|account detail|accounting document|fi document)/i.test(q) || /show accounting details for po/i.test(q)) {
+    return normalizeRoutingResult({
+      system: "s4hana",
+      module: "mm",
+      intent: "get_purchase_order_details",
+      confidence: 0.9,
+      reason: "Matched accounting details keywords before generic PO detail fallback",
+      source: "keyword",
+      entities: normalizeEntitiesByIntent("get_purchase_order_details", query),
+      documentFlowIntent: "ACCOUNTING_DOCUMENT",
     });
   }
 

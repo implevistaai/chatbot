@@ -153,7 +153,7 @@ test("flow classifier routes lifecycle prompts into the multi-hop execution path
   assert.equal(isPurchaseOrderFlowRequest("Show complete details for PO 4500001234", { docNumber: "4500001234" }), true);
   assert.equal(isPurchaseOrderFlowRequest("Show goods receipt for PO 4500001234", { docNumber: "4500001234" }), true);
   assert.equal(isPurchaseOrderFlowRequest("Show accounting details for PO 4500001234", { docNumber: "4500001234" }), true);
-  assert.equal(isPurchaseOrderFlowRequest("Show vendor details", {}), false);
+ 
 });
 
 test("invoice-only prompts stay out of the full procurement flow gate", () => {

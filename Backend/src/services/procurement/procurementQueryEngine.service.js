@@ -442,15 +442,17 @@ function detectDocumentFlowIntent(query) {
   const text = normalizeText(query);
 
   if (!text) return null;
-  if (/\b(material document|material documents|material movement|goods movement|movement type|mat doc|material ledger)\b/i.test(text)) return "MATERIAL_DOCUMENT";
+  if (/\b(pricing details|price details|pricing information|pricing info|price information|price info|net value|net price|currency)\b/i.test(text)) return "PRICING_DETAILS";
+  if (/\b(material document|material documents|material movement|goods movement|goods receipt|receipt document|movement type|mat doc|material ledger)\b/i.test(text)) return "MATERIAL_DOCUMENT";
   if (/\b(invoice details|invoice information|invoice document|show invoice for po|show invoice for the po|invoice for the po)\b/i.test(text)) return "INVOICE_DETAILS";
-  if (/\b(accounting document|accounting doc|account details|account detail|show account details|fi document)\b/i.test(text)) return "ACCOUNTING_DOCUMENT";
+  if (/\b(accounting document|accounting doc|account details|account detail|show account details|show accounting details|accounting details for po|show accounting details for po|fi document)\b/i.test(text)) return "ACCOUNTING_DOCUMENT";
   if (/\b(complete flow|document flow|lifecycle|end to end)\b/i.test(text)) return "COMPLETE_DOCUMENT_FLOW";
   return null;
 }
 
 function getDocumentFlowExecutionPlan(intent) {
   const normalized = String(intent || "").trim().toUpperCase();
+  if (normalized === "PRICING_DETAILS") return ["ZIV_PO_DETAILS_CDS"];
   if (normalized === "MATERIAL_DOCUMENT") return ["ZIV_PO_DETAILS_CDS", "ZIV_MAT_LEDGERS_CDS"];
   if (normalized === "INVOICE_DETAILS") return ["ZIV_PO_DETAILS_CDS", "ZIV_RSEG_DETAILS_CDS", "ZIV_RBKP_DETAILS_CDS"];
   if (normalized === "ACCOUNTING_DOCUMENT") return ["ZIV_PO_DETAILS_CDS", "ZIV_RSEG_DETAILS_CDS", "ZIV_RBKP_DETAILS_CDS", "ZIV_ACDOCA_DETAILS_CDS"];

@@ -81,7 +81,7 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
     Menge: "Quantity",
     NetPrice: "Net Price",
     CurKey: "Currency",
-    SuppAcoutNo: "Supplier Account Number",
+    SuppAcoutNo: "Supplier",
     UserCreated: "Created By",
     CrtDate: "Created Date",
     ExcngRate: "Exchange Rate",

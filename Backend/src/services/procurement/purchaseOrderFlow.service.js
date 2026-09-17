@@ -431,9 +431,32 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
 
     try {
       matResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: matQuery }, req.sapAuth);
-      matRows = toScopedMatRows(toResultsArray(matResponse));
+      const rawMatRows = toResultsArray(matResponse);
+      matRows = toScopedMatRows(rawMatRows);
+      if (!matRows.length && rawMatRows.length > 0) {
+        matRows = rawMatRows;
+      }
       attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
       matAttached = true;
+
+      if (!matRows.length && resolvedPoNo) {
+        const poOnlyQuery = buildQuery(matService.entitySet, {
+          $filter: `${matPoField} eq '${resolvedPoNo}'`,
+          $top: 200,
+        });
+
+        const poOnlyResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: poOnlyQuery }, req.sapAuth);
+        const rawPoOnlyRows = toResultsArray(poOnlyResponse);
+        const poOnlyRows = toScopedMatRows(rawPoOnlyRows);
+        const visiblePoOnlyRows = poOnlyRows.length > 0 ? poOnlyRows : rawPoOnlyRows;
+        if (visiblePoOnlyRows.length > 0) {
+          matRows = visiblePoOnlyRows;
+          matRequestPath = poOnlyQuery;
+          matResponse = poOnlyResponse;
+          attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
+          writeLog("[PO_FLOW] MAT PO-only fallback applied");
+        }
+      }
     } catch (error) {
       if (!looksLikeMissingPropertyError(error)) {
         throw error;
@@ -462,9 +485,11 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
 
         try {
           const retryResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: retryQuery }, req.sapAuth);
-          const retryRows = toScopedMatRows(toResultsArray(retryResponse));
-          if (retryRows.length > 0) {
-            matRows = retryRows;
+          const rawRetryRows = toResultsArray(retryResponse);
+          const retryRows = toScopedMatRows(rawRetryRows);
+          const visibleRetryRows = retryRows.length > 0 ? retryRows : rawRetryRows;
+          if (visibleRetryRows.length > 0) {
+            matRows = visibleRetryRows;
             matRequestPath = retryQuery;
             matResponse = retryResponse;
             attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);
@@ -483,7 +508,11 @@ export async function executePurchaseOrderFlow({ req, catalogs = [], plan = {}, 
         const unfilteredQuery = buildQuery(matService.entitySet, { $top: 200 });
         try {
           const unfilteredResponse = await fetchFromSap({ system: req.system, service: matService, relativePath: unfilteredQuery }, req.sapAuth);
-          matRows = toScopedMatRows(toResultsArray(unfilteredResponse));
+          const rawUnfilteredRows = toResultsArray(unfilteredResponse);
+          matRows = toScopedMatRows(rawUnfilteredRows);
+          if (!matRows.length && rawUnfilteredRows.length > 0) {
+            matRows = rawUnfilteredRows;
+          }
           matRequestPath = unfilteredQuery;
           matResponse = unfilteredResponse;
           attachRows({ steps, rowsByStep }, "MAT", matRows, matResponse, matRequestPath);

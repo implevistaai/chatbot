@@ -995,7 +995,12 @@ export default function ChatScreen({
               );
 
               return (
-                <div key={groupKey} className="group">
+                <div
+                  key={groupKey}
+                  id={isUser ? `chat-msg-${m?.id || groupKey}` : undefined}
+                  data-role={isUser ? "user" : undefined}
+                  className="group"
+                >
                   {isUser && !isEditing && (
                     <div className="flex flex-col items-end">
                       <MessageBubble

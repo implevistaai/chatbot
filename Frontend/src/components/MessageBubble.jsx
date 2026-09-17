@@ -3,12 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReplyTable from "./ReplyTable";
 import PODetailsDrawer from "./PODetailsDrawer";
 import { replyToTable } from "../utils/replyToTable";
-import { checkSolmanTransportDependencies, getSolmanChangeRequestDetails, listSolmanTransports } from "../api/solmanApi";
+import { checkSolmanTransportDependencies, getSolmanChangeRequestDetails } from "../api/solmanApi";
 import {
   getPendingPurchaseOrderItems,
   getPendingPurchaseOrders,
   getProcurementFlowDetailsByItem,
-  getPurchaseOrderDetails,
   getS4dPurchaseOrderDetails,
 } from "../api/chatApi";
 import {
@@ -129,14 +128,6 @@ function renderPieSliceLabel({ cx = 0, cy = 0, midAngle = 0, innerRadius = 0, ou
 }
 
 function TransportDrawer({ open, title, status = "", loading, error, transports, onClose }) {
-  const normalizedTransports = Array.isArray(transports)
-    ? transports
-    : Array.isArray(transports?.drawerRows)
-      ? transports.drawerRows
-      : Array.isArray(transports?.rows)
-        ? transports.rows
-        : [];
-
   useEffect(() => {
     if (!open) return undefined;
 
@@ -149,87 +140,10 @@ function TransportDrawer({ open, title, status = "", loading, error, transports,
   }, [open, onClose]);
 
   if (!open) return null;
-
-  function readTransportFieldValue(row, keys = []) {
-    if (typeof row === "string" || typeof row === "number") {
-      const text = String(row).trim();
-      return text || "";
-    }
-
-    const sourceRow = row?.raw || row?._raw || row;
-
-    for (const key of Array.isArray(keys) ? keys : []) {
-      const value = sourceRow?.[key];
-      if (value == null) continue;
-
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        const text = String(value).trim();
-        if (text) return text;
-      }
-
-      if (typeof value === "object") {
-        const nestedCandidates = [
-          value.value,
-          value.text,
-          value.Text,
-          value.description,
-          value.Description,
-          value.label,
-          value.Label,
-          value.name,
-          value.Name,
-          value._,
-          value.__text,
-          value.__value,
-        ];
-
-        for (const candidate of nestedCandidates) {
-          const text = String(candidate ?? "").trim();
-          if (text) return text;
-        }
-      }
-    }
-
-    if (sourceRow && typeof sourceRow === "object") {
-      for (const value of Object.values(sourceRow)) {
-        if (value == null) continue;
-
-        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-          const text = String(value).trim();
-          if (text) return text;
-        }
-
-        if (typeof value === "object") {
-          const nestedCandidates = [
-            value.value,
-            value.text,
-            value.Text,
-            value.description,
-            value.Description,
-            value.label,
-            value.Label,
-            value.name,
-            value.Name,
-            value._,
-            value.__text,
-            value.__value,
-          ];
-
-          for (const candidate of nestedCandidates) {
-            const text = String(candidate ?? "").trim();
-            if (text) return text;
-          }
-        }
-      }
-    }
-
-    return "";
-  }
-
   const drawerContent = (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40 backdrop-blur-[1px]" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[9999] flex justify-end bg-slate-950/40 backdrop-blur-[1px]" onMouseDown={onClose}>
       <aside
-        className="flex h-full w-full max-w-full flex-col bg-white shadow-[0_0_40px_rgba(15,23,42,0.25)] transition-transform duration-300 ease-out sm:w-[58vw] md:w-[44vw] lg:w-[38vw] xl:w-[35vw]"
+        className="flex h-full w-full max-w-full flex-col bg-white shadow-[0_0_40px_rgba(15,23,42,0.25)] sm:w-[58vw] md:w-[44vw] lg:w-[38vw] xl:w-[35vw]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4">
@@ -240,6 +154,7 @@ function TransportDrawer({ open, title, status = "", loading, error, transports,
             <div className="mt-1 break-words text-sm font-semibold text-slate-900">
               {title}
             </div>
+            {status ? <div className="mt-1 text-xs text-slate-600">{status}</div> : null}
           </div>
 
           <button
@@ -253,141 +168,172 @@ function TransportDrawer({ open, title, status = "", loading, error, transports,
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
-          {loading ? (
-            <div className="flex h-full min-h-[240px] items-center justify-center">
-              <div className="flex items-center gap-3 text-sm text-slate-600">
-                <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-blue-600" />
-                Loading transport details...
-              </div>
-            </div>
-          ) : error ? (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-              {error}
-            </div>
-          ) : Array.isArray(normalizedTransports) && normalizedTransports.length > 0 ? (
-            <div className="space-y-3">
-              {normalizedTransports.map((transport, index) => {
-                const showRowNumber = normalizedTransports.length > 1;
-                const sourceTransport = typeof transport === "object" && transport !== null ? transport : { transport };
-                const transportValue = readTransportFieldValue(transport, [
-                  "transport",
-                  "Trkorr",
-                  "TRKORR",
-                  "Transport",
-                  "TRANSPORT",
-                  "TransportNo",
-                  "TRANSPORT_NO",
-                ]);
-                const descriptionValue = readTransportFieldValue(transport, [
-                  "description",
-                  "Desc",
-                  "DESC",
-                  "Description",
-                  "DESCRIPTION",
-                  "ShortText",
-                  "SHORT_TEXT",
-                ]);
-                const ownerValue = readTransportFieldValue(transport, [
-                  "owner",
-                  "Owner",
-                  "OWNER",
-                  "CreatedBy",
-                  "CREATED_BY",
-                  "User",
-                  "USERNAME",
-                  "AS4USER",
-                ]);
-                const transportTypeValue = readTransportFieldValue(transport, [
-                  "TrfuncDescription",
-                  "transportType",
-                  "taskType",
-                  "taskReleased",
-                  "Trfunction",
-                  "TRFUNCTION",
-                  "TransportType",
-                  "TRANSPORT_TYPE",
-                  "TRFUNCTION_CODE",
-                  "TaskFuncDescription",
-                  "TASK_FUNC_DESCRIPTION",
-                  "TaskFuncText",
-                  "TASK_FUNC_TEXT",
-                ]);
-                const taskValue = readTransportFieldValue(transport, [
-                  "Tasks",
-                  "TASKS",
-                  "Task",
-                  "TASK",
-                ]);
-                const taskOwnerValue = readTransportFieldValue(transport, [
-                  "TaskOwner",
-                  "TASK_OWNER",
-                  "owner",
-                  "Owner",
-                  "OWNER",
-                  "AS4USER",
-                ]);
-                const taskTypeValue = readTransportFieldValue(transport, [
-                  "TaskFuncDescription",
-                  "TASK_FUNC_DESCRIPTION",
-                  "TaskFuncText",
-                  "TASK_FUNC_TEXT",
-                  "TaskFunc",
-                  "TASK_FUNC",
-                ]);
-                const rows = [
-                  ...(showRowNumber ? [{ label: "No", value: index + 1 }] : []),
-                  { label: "Transport", value: transportValue },
-                  { label: "Description", value: descriptionValue },
-                  { label: "Owner", value: ownerValue },
-                  { label: "Transport Type", value: transportTypeValue },
-                  { label: "Task", value: taskValue },
-                  { label: "Task Owner", value: taskOwnerValue },
-                  { label: "Task Type", value: taskTypeValue },
-                  { label: "Dev Created", value: formatSapDateTime(sourceTransport?.DevCreatedDate, sourceTransport?.DevCreatedTime) },
-                  { label: "Dev Released", value: formatSapDateTime(sourceTransport?.DevReleasedDate, sourceTransport?.DevReleasedTime) },
-                  { label: "Task Released", value: formatSapDateTime(sourceTransport?.TaskExdate, sourceTransport?.TaskExtime) },
-                ];
-
-                return (
-                  <div key={`${transportValue || transport?.Trkorr || transport?.transport || index}`} className="overflow-hidden rounded-3xl border border-sky-100 bg-gradient-to-br from-white to-sky-50/30 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
-                    <div className="border-b border-sky-100 bg-gradient-to-r from-sky-50 to-cyan-50 px-4 py-3">
-                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Transport Record</div>
-                      <div className="mt-1 text-sm font-semibold text-slate-900">{transportValue || `Record ${index + 1}`}</div>
-                    </div>
-
-                    <table className="w-full border-collapse text-sm">
-                      <tbody>
-                        {rows.map((field) => (
-                          <tr key={`${transport?.Trkorr || transport?.transport || index}-${field.label}`} className="border-b border-sky-100/80 last:border-b-0 odd:bg-white even:bg-slate-50/50">
-                            <th className="w-[34%] bg-transparent px-4 py-3 text-left align-top text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                              {field.label}
-                            </th>
-                            <td className="px-4 py-3 align-top text-sm font-medium text-slate-900 break-words whitespace-pre-wrap">
-                              {String(field.value ?? "-").trim() || "-"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">
-              {error || "No transport details found for the connected system."}
-            </div>
-          )}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-8 text-sm text-slate-600">
+            {loading ? "Loading transport details..." : error || "Transport drawer open"}
+          </div>
         </div>
       </aside>
     </div>
   );
 
-  if (typeof document === "undefined") {
-    return drawerContent;
+  return drawerContent;
+}
+
+function syncTransportDrawerOverlay({ open, title, status = "", loading = false, error = "", transports = [] , onClose = null }) {
+  if (typeof document === "undefined") return;
+
+  let root = document.getElementById("solman-transport-drawer-overlay");
+
+  if (!open) {
+    if (root) root.remove();
+    return;
   }
 
-  return createPortal(drawerContent, document.body);
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "solman-transport-drawer-overlay";
+    document.body.appendChild(root);
+  }
+
+  const transportRows = Array.isArray(transports) ? transports : [];
+  const transportCount = transportRows.length;
+  const escapeHtml = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const getField = (row, keys = []) => {
+    for (const key of Array.isArray(keys) ? keys : []) {
+      const text = poValueToText(row?.[key]);
+      if (text) return text;
+    }
+    return "";
+  };
+  const formatTransportDateTime = (dateValue, timeValue) => {
+    const dateText = poValueToText(dateValue).replace(/[./-]/g, "/");
+    const rawTime = poValueToText(timeValue).trim();
+    const timeText = rawTime.startsWith("PT")
+      ? rawTime
+          .replace(/^PT/i, "")
+          .replace(/H/i, ":")
+          .replace(/M/i, ":")
+          .replace(/S/i, "")
+          .replace(/::+/g, ":")
+          .replace(/:$/, "")
+          .split(":")
+          .map((part) => part.padStart(2, "0"))
+          .join(":")
+      : rawTime.replace(/:/g, ":");
+
+    if (dateText && timeText) {
+      return `${dateText} ${timeText}`;
+    }
+
+    return dateText || timeText || "-";
+  };
+  const renderRow = (row, index) => {
+    const source = row?.raw || row?._raw || row || {};
+    const transport = getField(source, ["Trkorr", "TRKORR", "Transport", "TRANSPORT", "TransportNo", "TRANSPORT_NO"]) || `Record ${index + 1}`;
+    const description = getField(source, ["Desc", "DESC", "Description", "DESCRIPTION", "ShortText", "SHORT_TEXT"]);
+    const owner = getField(source, ["Owner", "OWNER", "CreatedBy", "CREATED_BY", "User", "USERNAME", "AS4USER"]);
+    const transportType = getField(source, ["TrfuncDescription", "TRFUNCTION_TEXT", "Trfunction", "TRFUNCTION", "TransportType", "TRANSPORT_TYPE", "TRFUNCTION_CODE"]);
+    const task = getField(source, ["Tasks", "TASKS", "Task", "TASK"]);
+    const taskOwner = getField(source, ["TaskOwner", "TASK_OWNER", "TaskOwnerName", "TASK_OWNER_NAME", "Owner", "OWNER", "AS4USER"]);
+    const taskType = getField(source, ["TaskFuncDescription", "TASK_FUNC_DESCRIPTION", "TaskFuncText", "TASK_FUNC_TEXT", "TaskFunc", "TASK_FUNC"]);
+    const devCreated = formatTransportDateTime(source?.DevCreatedDate, source?.DevCreatedTime);
+    const devReleased = formatTransportDateTime(source?.DevReleasedDate, source?.DevReleasedTime);
+    const taskReleased = formatTransportDateTime(source?.TaskExdate, source?.TaskExtime);
+
+    const cells = [
+      transport,
+      description,
+      owner,
+      transportType,
+      task,
+      taskOwner,
+      taskType,
+      devCreated,
+      devReleased,
+      taskReleased,
+    ];
+
+    const fields = [
+      ["Transport", transport],
+      ["Description", description || "-"],
+      ["Owner", owner || "-"],
+      ["Transport Type", transportType || "-"],
+      ["Task", task || "-"],
+      ["Task Owner", taskOwner || "-"],
+      ["Task Type", taskType || "-"],
+      ["Dev Created", devCreated],
+      ["Dev Released", devReleased],
+      ["Task Released", taskReleased],
+    ];
+
+    return `
+      <div style="overflow:hidden;border:1px solid #dbeafe;border-radius:18px;background:linear-gradient(135deg,#fff,#f8fbff 70%);box-shadow:0 12px 30px rgba(15,23,42,.08);margin-bottom:12px;">
+        <div style="border-bottom:1px solid #dbeafe;background:linear-gradient(90deg,#eff6ff,#ecfeff);padding:12px 16px;">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#1d4ed8;">Transport Record</div>
+          <div style="margin-top:4px;font-size:14px;font-weight:700;color:#0f172a;word-break:break-word;">${escapeHtml(transport)}</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tbody>
+            ${fields.map(([label, value]) => `
+              <tr style="border-bottom:1px solid rgba(219,234,254,.8);">
+                <th style="width:34%;padding:12px 16px;text-align:left;vertical-align:top;font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#64748b;">${escapeHtml(label)}</th>
+                <td style="padding:12px 16px;vertical-align:top;font-size:13px;font-weight:500;color:#0f172a;word-break:break-word;white-space:pre-wrap;">${escapeHtml(value || "-")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
+  const transportTable = transportRows.length > 0
+    ? `
+      <div>
+        ${transportRows.map((row, index) => renderRow(row, index)).join("")}
+      </div>
+    `
+    : `<div style="border:1px dashed #cbd5e1;border-radius:16px;background:#f8fafc;padding:16px;color:#475569;font-size:14px;">No transport details found for the connected system.</div>`;
+
+  const content = `
+    <div data-solman-transport-backdrop style="position:fixed;inset:0;z-index:9999;display:flex;justify-content:flex-end;background:rgba(15,23,42,.4);backdrop-filter:blur(1px);">
+      <aside data-solman-transport-panel style="height:100%;width:100%;max-width:35vw;min-width:320px;background:#fff;box-shadow:0 0 40px rgba(15,23,42,.25);display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:16px;">
+          <div style="min-width:0;">
+            <div style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#64748b;">Transport Details</div>
+            <div style="margin-top:4px;font-size:14px;font-weight:700;color:#0f172a;word-break:break-word;">${String(title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+            ${status ? `<div style="margin-top:4px;font-size:12px;color:#475569;word-break:break-word;">${String(status).replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>` : ""}
+          </div>
+          <button type="button" aria-label="Close transport drawer" data-solman-transport-close style="height:36px;width:36px;border-radius:9999px;border:1px solid #e2e8f0;background:#fff;color:#334155;cursor:pointer;font-size:22px;line-height:1;">×</button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:16px;">
+          ${loading ? `<div style="border:1px solid #e2e8f0;border-radius:16px;background:#f8fafc;padding:16px;color:#475569;font-size:14px;">Loading transport details...</div>` : error ? `<div style="border:1px solid #fecaca;border-radius:16px;background:#fef2f2;padding:16px;color:#b91c1c;font-size:14px;">${escapeHtml(error)}</div>` : transportTable}
+        </div>
+      </aside>
+    </div>
+  `;
+
+  root.innerHTML = content;
+  const backdrop = root.querySelector("[data-solman-transport-backdrop]");
+  const panel = root.querySelector("[data-solman-transport-panel]");
+
+  if (backdrop) {
+    backdrop.addEventListener("mousedown", (event) => {
+      if (event.target !== backdrop) return;
+      if (root?.parentNode) {
+        root.remove();
+      }
+      onClose?.();
+    });
+  }
+
+  if (panel) {
+    panel.addEventListener("mousedown", (event) => event.stopPropagation());
+  }
+
+  const closeButton = root.querySelector("[data-solman-transport-close]");
+  if (closeButton) {
+    closeButton.onclick = () => onClose?.();
+  }
 }
 
 function formatPoDrawerValue(value) {
@@ -742,21 +688,6 @@ function formatSapDateTime(dateValue = "", timeValue = "") {
   return `${formattedDate} ${timeText}`.trim();
 }
 
-function formatTransportValue(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return "-";
-
-  const ptMatch = text.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i);
-  if (ptMatch) {
-    const hours = String(Number(ptMatch[1] || 0)).padStart(2, "0");
-    const minutes = String(Number(ptMatch[2] || 0)).padStart(2, "0");
-    const seconds = String(Number(ptMatch[3] || 0)).padStart(2, "0");
-    return `${hours}:${minutes}:${seconds}`;
-  }
-
-  return text;
-}
-
 function extractFilterRange(data = {}, chart = null) {
   const candidates = [
     data?.dateRange,
@@ -899,17 +830,31 @@ function buildStructuredTable(data) {
 
   const rows =
     viewType === "transport_dependency_table" || viewType === "dependency_check_table"
-      ? rawRows.map((row) => [
-          row.originalTransport ?? "-",
-          row.dependentTransport ?? "-",
-          row.description ?? "-",
-          row.status ?? "-",
-          row.owner ?? "-",
-          row.exportDate ?? "-",
-          row.exportTime ?? "-",
-          row.importDate ?? "-",
-          row.importTime ?? "-",
-        ])
+      ? rawRows.map((row) =>
+          Array.isArray(row)
+            ? [
+                row[0] ?? "-",
+                row[1] ?? "-",
+                row[2] ?? "-",
+                row[3] ?? "-",
+                row[4] ?? "-",
+                row[5] ?? "-",
+                row[6] ?? "-",
+                row[7] ?? "-",
+                row[8] ?? "-",
+              ]
+            : [
+                row.originalTransport ?? "-",
+                row.dependentTransport ?? "-",
+                row.description ?? "-",
+                row.status ?? "-",
+                row.owner ?? "-",
+                row.exportDate ?? "-",
+                row.exportTime ?? "-",
+                row.importDate ?? "-",
+                row.importTime ?? "-",
+              ]
+        )
       : rawRows.map((row) => [
           row.no ?? "-",
           row.transport ?? "-",
@@ -1311,49 +1256,6 @@ function getProcurementCellValue(row, columnName) {
   return String(Array.isArray(row) ? row : row?.[columnName] ?? "").trim();
 }
 
-function filterProcurementSectionsByPoItem(sections = [], poItem = "") {
-  const targetItem = String(poItem || "").trim();
-  if (!targetItem) return sections;
-
-  return (Array.isArray(sections) ? sections : []).map((section) => {
-    const sectionTitle = String(section?.title || "").trim().toLowerCase();
-    if (sectionTitle === "purchase document summary") {
-      return section;
-    }
-
-    const rows = Array.isArray(section?.rows) ? section.rows : [];
-    if (!rows.length) return section;
-
-    const hasPoItemColumn = Array.isArray(section?.columns)
-      ? section.columns.some((column) => String(column || "").trim().toLowerCase() === "po item")
-      : false;
-
-    if (!hasPoItemColumn) {
-      if (sectionTitle.includes("material document")) {
-        const firstMatch = rows.find((row) => String(row?.PoItem || row?.poItem || row?.PoItemNo || row?.po_item || "").trim() === targetItem);
-        return {
-          ...section,
-          rows: firstMatch ? [firstMatch] : rows,
-        };
-      }
-      return section;
-    }
-
-    if (sectionTitle.includes("invoice details")) {
-      const firstMatch = rows.find((row) => String(getProcurementCellValue(row, "PO Item")).trim() === targetItem);
-      return {
-        ...section,
-        rows: firstMatch ? [firstMatch] : rows,
-      };
-    }
-
-    return {
-      ...section,
-      rows: rows.filter((row) => String(getProcurementCellValue(row, "PO Item")).trim() === targetItem),
-    };
-  });
-}
-
 function mergeSummaryWithDetailSections({ baseSections = [], detailSections = [] } = {}) {
   const baselineSections = Array.isArray(baseSections) ? baseSections : [];
   const refreshedSections = Array.isArray(detailSections) ? detailSections : [];
@@ -1515,18 +1417,6 @@ export default function MessageBubble({
     });
   }, [data?.hasMore, data?.nextPage, data?.rows, data?.viewType, isPendingPoListResponse]);
 
-  const tableSourceRows = useMemo(
-    () =>
-      dedupeSolmanRecords(
-        Array.isArray(data?.tableRecords)
-          ? data.tableRecords
-          : Array.isArray(data?.rows)
-            ? data.rows
-            : buildRowsFromChartOrTable(data)
-      ),
-    [data]
-  );
-
   const [allCRRecords, setAllCRRecords] = useState([]);
   const [selectedStatus, setSelectedStatus] = useState("");
   const [statusDistribution, setStatusDistribution] = useState(null);
@@ -1686,11 +1576,6 @@ export default function MessageBubble({
   }, [isSolmanCollectionResponse, visibleRows]);
 
   const selectedRecordCount = visibleCRRecords.length;
-  const emptyTableMessage = !allCRRecords.length
-    ? "No Change Requests found."
-    : visibleCRRecords.length === 0 && (selectedStatus || hasAppliedSearch)
-      ? "No Change Requests found for the selected filters."
-      : "";
   const summaryFilterRange = extractFilterRange(data, chartSource);
   const summaryText =
     safeSummary && summaryFilterRange && !safeSummary.toLowerCase().includes("date range")
@@ -1907,11 +1792,29 @@ export default function MessageBubble({
         : String(changeRequestIdOrRow || "").trim();
       if (!cr) return;
 
+      let resolvedRow = sourceRow;
+
+      if (!resolvedRow || !resolvedRow.systemId) {
+        try {
+          const detailPayload = await getSolmanChangeRequestDetails({
+            systemId: data?.systemId || data?.result?.systemId || systemId || "",
+            sapUser: data?.sapUser || data?.result?.sapUser || sapUser || "",
+            objectId: cr,
+            processType: data?.processType || data?.result?.processType || "",
+            businessScope: data?.businessScope || data?.result?.businessScope || "",
+          });
+
+          resolvedRow = detailPayload?.result || detailPayload?.data || detailPayload?.record || detailPayload || resolvedRow;
+        } catch (error) {
+          console.warn("[UI][TRANSPORT_DRAWER] failed to hydrate CR details before transport lookup", error);
+        }
+      }
+
       const backendContextSystemId = String(
-        sourceRow?.systemId ||
-          sourceRow?.SYSTEM_ID ||
-          sourceRow?.system ||
-          sourceRow?.SystemId ||
+        resolvedRow?.systemId ||
+          resolvedRow?.SYSTEM_ID ||
+          resolvedRow?.system ||
+          resolvedRow?.SystemId ||
           data?.systemId ||
           data?.result?.systemId ||
           data?.responseMeta?.systemId ||
@@ -1946,10 +1849,18 @@ export default function MessageBubble({
         changeRequestId: cr,
         transports: [],
       });
+      syncTransportDrawerOverlay({
+        open: true,
+        title: `CR ${cr}`,
+        loading: true,
+        status: "",
+        transports: [],
+        onClose: () => handleCloseTransportDrawer(),
+      });
 
       try {
         if (!resolvedSystemId) {
-          const missingReason = sourceRow?.systemId || sourceRow?.SYSTEM_ID || data?.systemId || data?.result?.systemId
+          const missingReason = resolvedRow?.systemId || resolvedRow?.SYSTEM_ID || data?.systemId || data?.result?.systemId
             ? "The selected record did not carry a usable SAP system mapping for transport lookup."
             : "The backend response did not include a SAP system mapping for this record.";
 
@@ -1961,6 +1872,15 @@ export default function MessageBubble({
             status: "",
             changeRequestId: cr,
             transports: [],
+          });
+          syncTransportDrawerOverlay({
+            open: true,
+            title: `CR ${cr}`,
+            error: `${missingReason} The drawer needs the record's systemId mapped in the database before it can fetch transport details.`,
+            loading: false,
+            status: "",
+            transports: [],
+            onClose: () => handleCloseTransportDrawer(),
           });
           return;
         }
@@ -1988,23 +1908,31 @@ export default function MessageBubble({
             : null,
         });
 
+        const dependencyRows = Array.isArray(transportResult?.result?.dependencies)
+          ? transportResult.result.dependencies
+          : Array.isArray(transportResult?.dependencies)
+            ? transportResult.dependencies
+            : [];
+        const sourceTransportRows = Array.isArray(transportResult?.result?.sourceTransports)
+          ? transportResult.result.sourceTransports
+          : Array.isArray(transportResult?.sourceTransports)
+            ? transportResult.sourceTransports
+            : [];
         const transportRows = Array.isArray(transportResult?.result?.raw?.transportLookup?.d?.results)
           ? transportResult.result.raw.transportLookup.d.results
-          : Array.isArray(transportResult?.result?.rows)
+          : Array.isArray(transportResult?.result?.rows) && transportResult.result.rows.length > 0
             ? transportResult.result.rows
-            : Array.isArray(transportResult?.result?.dependencies)
-              ? transportResult.result.dependencies
-              : Array.isArray(transportResult?.result?.tableRows)
+            : dependencyRows.length > 0
+              ? dependencyRows
+              : Array.isArray(transportResult?.result?.tableRows) && transportResult.result.tableRows.length > 0
                 ? transportResult.result.tableRows
-                : Array.isArray(transportResult?.dependencies)
-                  ? transportResult.dependencies
-                  : Array.isArray(transportResult?.sourceTransports)
-                    ? transportResult.sourceTransports.map((transport) => ({ Trkorr: transport }))
-                    : Array.isArray(transportResult?.tableRows)
-                      ? transportResult.tableRows
-                      : Array.isArray(transportResult?.rows)
-                        ? transportResult.rows
-                        : [];
+                : sourceTransportRows.length > 0
+                  ? sourceTransportRows.map((transport) => (typeof transport === "string" ? { Trkorr: transport } : transport))
+                  : Array.isArray(transportResult?.tableRows) && transportResult.tableRows.length > 0
+                    ? transportResult.tableRows
+                    : Array.isArray(transportResult?.rows) && transportResult.rows.length > 0
+                      ? transportResult.rows
+                      : [];
 
         const resolvedStatus = String(
           transportResult?.message ||
@@ -2025,6 +1953,15 @@ export default function MessageBubble({
           changeRequestId: cr,
           transports: transportRows,
         });
+        syncTransportDrawerOverlay({
+          open: true,
+          title: `CR ${cr}`,
+          status: resolvedStatus,
+          loading: false,
+          error: "",
+          transports: transportRows,
+          onClose: () => handleCloseTransportDrawer(),
+        });
       } catch (err) {
         setTransportDrawer({
           open: true,
@@ -2035,6 +1972,15 @@ export default function MessageBubble({
           changeRequestId: cr,
           transports: [],
         });
+        syncTransportDrawerOverlay({
+          open: true,
+          title: `CR ${cr}`,
+          loading: false,
+          error: err?.message || "Transport lookup failed because the record could not be mapped to a SAP system in the database.",
+          status: "",
+          transports: [],
+          onClose: () => handleCloseTransportDrawer(),
+        });
       }
     },
     [data?.result?.sapUser, data?.result?.systemId, data?.sapUser, data?.systemId, sapUser, systemId]
@@ -2042,6 +1988,7 @@ export default function MessageBubble({
 
   const handleCloseTransportDrawer = useCallback(() => {
     setTransportDrawer((current) => ({ ...current, open: false }));
+    syncTransportDrawerOverlay({ open: false });
   }, []);
 
   const handleOpenPoDrawer = useCallback(async (poRow) => {
@@ -2264,17 +2211,17 @@ export default function MessageBubble({
   );
 
   const renderCrNumberCell = useCallback(
-    ({ value, column, row, rowIndex }) => {
+    ({ value, column }) => {
       if (String(column || "").toLowerCase() !== "cr number") return null;
 
       const cr = String(value || "").trim();
       if (!cr || cr === "-") return null;
 
+      const normalizedCr = normalizeSearchText(cr);
       const sourceRow =
-        (row && typeof row === "object" ? row : null) ||
-        visibleCRRecords?.[Number(rowIndex)] ||
-        searchFilteredRecords?.[Number(rowIndex)] ||
-        allCRRecords?.[Number(rowIndex)] ||
+        visibleCRRecords?.find((entry) => normalizeSearchText(getSolmanCrNumber(entry)) === normalizedCr) ||
+        searchFilteredRecords?.find((entry) => normalizeSearchText(getSolmanCrNumber(entry)) === normalizedCr) ||
+        allCRRecords?.find((entry) => normalizeSearchText(getSolmanCrNumber(entry)) === normalizedCr) ||
         null;
 
       const drawerRow = sourceRow && typeof sourceRow === "object"
@@ -2316,6 +2263,26 @@ export default function MessageBubble({
     },
     [handleOpenPoDrawer]
   );
+
+  let table = buildStructuredTable(data);
+  const genericChartView = chartView;
+
+  if (!table) {
+    try {
+      table = replyToTable(formattedText);
+    } catch (e) {
+      console.error("Table parse error:", e);
+    }
+  }
+
+  const hasTable = Boolean(table?.columns && table?.rows);
+  const totalRows = Number(table?._meta?.totalRows || 0);
+  const cappedTo = Number(table?._meta?.cappedTo || 0);
+
+  const isCapped =
+    totalRows > 0 &&
+    cappedTo > 0 &&
+    totalRows > cappedTo;
 
   if (isUser) {
     return (
@@ -2529,62 +2496,41 @@ export default function MessageBubble({
                   </button>
                 </div>
               </div>
-            ) : hasTable ? (
-              <>
-                {isCapped && (
-                  <div className="px-4 pt-3 text-xs text-slate-600">
-                    Showing {cappedTo} of {totalRows} rows.
-                    Refine your query (or use top 10).
-                  </div>
-                )}
+            ) : null}
 
+            {visibleCRRecords.length > 0 ? (
+              <>
                 <ReplyTable
-                  columns={table.columns}
-                  rows={table.rows}
-                  forceGrid={Boolean(table?.forceGrid || data?.viewType === "transport_list_table")}
-                  renderCell={renderPoNumberCell}
+                  columns={tableColumns}
+                  rows={tableRows}
+                  forceGrid={true}
+                  renderCell={renderCrNumberCell}
                 />
+
+                <div className="flex flex-col gap-2 border-t border-green-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs text-slate-600">
+                    {hasMoreRecords
+                      ? `${visibleCRRecords.length} of ${searchFilteredRecords.length} loaded`
+                      : "No more records found."}
+                  </div>
+
+                  {hasMoreRecords ? (
+                    <button
+                      type="button"
+                      onClick={handleLoadMoreRecords}
+                      className="inline-flex items-center justify-center rounded-xl bg-green-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!hasMoreRecords}
+                    >
+                      Show More
+                    </button>
+                  ) : null}
+                </div>
               </>
             ) : (
-              <div className="whitespace-pre-wrap break-words leading-relaxed">
-                {formattedText}
-              </div>
+              <div className="px-4 py-6 text-sm text-slate-700">No records found for the selected filters.</div>
             )}
           </div>
 
-          {genericChartView?.normalized ? (
-            <div className="mt-3 overflow-hidden rounded-[18px] rounded-tl-sm border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
-              <div className="border-b border-slate-200 px-4 py-3">
-                <div className="text-sm font-semibold text-slate-900">
-                  {genericChartView.normalized.title}
-                </div>
-                <div className="mt-1 text-xs text-slate-600">
-                  {genericChartView.normalized.totalCRs} change request(s)
-                </div>
-              </div>
-
-              <div className="h-[18rem] sm:h-[22rem] w-full px-1 pb-1 pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart margin={{ top: 0, right: 10, bottom: 0, left: 10 }}>
-                    <Pie
-                      data={genericChartView.normalized.data}
-                      dataKey="count"
-                      nameKey="status"
-                      innerRadius={isSmallScreen ? 40 : 54}
-                      outerRadius={isSmallScreen ? 66 : 82}
-                      paddingAngle={3}
-                      label={renderPieSliceLabel}
-                      labelLine={false}
-                    >
-                      {genericChartView.normalized.data.map((entry, idx) => (
-                        <Cell key={`generic-cell-${entry.status}-${idx}`} fill={entry.color || "#64748b"} />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
     );
@@ -2707,7 +2653,7 @@ export default function MessageBubble({
               <>
                 <ReplyTable
                   columns={tableColumns}
-                  rows={buildSolmanListTableRows(visibleCRRecords)}
+                  rows={tableRows}
                   forceGrid={true}
                   renderCell={renderCrNumberCell}
                 />
@@ -2995,26 +2941,6 @@ export default function MessageBubble({
       </div>
     );
   }
-
-  let table = buildStructuredTable(data);
-  const genericChartView = chartView;
-
-  if (!table) {
-    try {
-      table = replyToTable(formattedText);
-    } catch (e) {
-      console.error("Table parse error:", e);
-    }
-  }
-
-  const hasTable = Boolean(table?.columns && table?.rows);
-  const totalRows = Number(table?._meta?.totalRows || 0);
-  const cappedTo = Number(table?._meta?.cappedTo || 0);
-
-  const isCapped =
-    totalRows > 0 &&
-    cappedTo > 0 &&
-    totalRows > cappedTo;
 
   const reconnectAction = action?.type === "reconnect_system" ? action : null;
   const isDisconnectedNotice = Boolean(reconnectAction);
