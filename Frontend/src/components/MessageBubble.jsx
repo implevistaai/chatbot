@@ -866,6 +866,18 @@ function buildStructuredTable(data) {
   };
 }
 
+function isNoDependencyMessage(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return false;
+
+  return (
+    text.includes("no dependency") ||
+    text.includes("no dependent transport") ||
+    text.includes("no dependent transports") ||
+    text.includes("has no dependency")
+  );
+}
+
 function buildRowsFromChartOrTable(data) {
   if (!data || typeof data !== "object") return [];
 
@@ -2288,6 +2300,8 @@ export default function MessageBubble({
           {dependencyItems.map((item, index) => {
             const transport = String(item?.transport || "-").trim() || "-";
             const message = String(item?.evMessage || item?.errorMessage || dependencyMessage || "").trim();
+            const dependencyRows = Array.isArray(item?.dependencies) ? item.dependencies : [];
+            const shouldShowTable = dependencyRows.length > 0 && !isNoDependencyMessage(message);
 
             return (
               <div
@@ -2298,6 +2312,55 @@ export default function MessageBubble({
                 <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-900">
                   {message || "No dependency message was returned."}
                 </div>
+
+                {shouldShowTable ? (
+                  <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                        <thead className="bg-slate-50 text-xs uppercase tracking-[0.14em] text-slate-600">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">Original Transport</th>
+                            <th className="px-3 py-2 font-semibold">Dependent Transport</th>
+                            <th className="px-3 py-2 font-semibold">Description</th>
+                            <th className="px-3 py-2 font-semibold">Status</th>
+                            <th className="px-3 py-2 font-semibold">Owner</th>
+                            <th className="px-3 py-2 font-semibold">Export Date</th>
+                            <th className="px-3 py-2 font-semibold">Export Time</th>
+                            <th className="px-3 py-2 font-semibold">Import Date</th>
+                            <th className="px-3 py-2 font-semibold">Import Time</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 bg-white">
+                          {dependencyRows.map((row, rowIndex) => {
+                            const dependentTransport = String(row?.dependentTransport || row?.TRKORR || "-").trim() || "-";
+                            const enteredTransport = String(row?.transportEntered || row?.TRANSPORT_ENTERED || transport).trim() || transport;
+                            const description = String(row?.description || row?.DESCRIPTION || "-").trim() || "-";
+                            const status = String(row?.status || row?.TRSTATUS || "-").trim() || "-";
+                            const owner = String(row?.owner || row?.OWNER || "-").trim() || "-";
+                            const exportDate = String(row?.exportDate || row?.EXPORT_DATE || "-").trim() || "-";
+                            const exportTime = String(row?.exportTime || row?.EXPORT_TIME || "-").trim() || "-";
+                            const importDate = String(row?.importDate || row?.IMPORT_DATE || "-").trim() || "-";
+                            const importTime = String(row?.importTime || row?.IMPORT_TIME || "-").trim() || "-";
+
+                            return (
+                              <tr key={`${dependentTransport}-${rowIndex}`} className="align-top text-slate-800">
+                                <td className="px-3 py-3 whitespace-nowrap">{enteredTransport}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{dependentTransport}</td>
+                                <td className="px-3 py-3 min-w-[16rem]">{description}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{status}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{owner}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{exportDate}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{exportTime}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{importDate}</td>
+                                <td className="px-3 py-3 whitespace-nowrap">{importTime}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             );
           })}
