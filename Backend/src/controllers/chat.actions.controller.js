@@ -1,11 +1,12 @@
 import { createSapActionHandler } from "./_shared/createSapActionHandler.js";
+import { getOwner } from "./_chat/auth.js";
 import { resolveSapConnection } from "../services/sap/sapConnectionResolver.service.js";
 import {
   createSolmanChangeRequest,
   getSolmanChangeRequestDetailsById,
   listSolmanChangeRequestsByDateRange,
 } from "../services/systems/solman/charm.service.js";
-import { getPurchaseOrderDetails } from "../services/systems/s4hana/po.service.js";
+import { getPurchaseOrderDetails, listPurchaseOrders } from "../services/systems/s4hana/po.service.js";
 import { getDependentTransportsFromCr, getTransportNumbersFromCr } from "../services/systems/solman/transport.service.js";
 import { createTransportRequest } from "../services/systems/solman/transportRequest.service.js";
 import { postToSap } from "../services/sap/sapWrite.service.js";
@@ -956,6 +957,56 @@ export const getPurchaseOrderDetailsAction = createSapActionHandler({
     rows: result.rows || [],
     totalCount: result.totalCount || null,
     data: result.data || null,
+  }),
+});
+
+export const listPurchaseOrdersAction = createSapActionHandler({
+  executor: "s4hana.mm.listPurchaseOrders",
+
+  validate: (body) => {
+    if (!cleanString(body?.systemId)) return "systemId is required.";
+    if (!cleanString(body?.sapUser)) return "sapUser is required.";
+    return null;
+  },
+
+  execute: async ({ owner, body }) => {
+    const connection = await resolveSapConnection({
+      owner,
+      systemId: body.systemId,
+      sapUser: body.sapUser,
+    });
+
+    const result = await listPurchaseOrders({
+      req: {
+        sapSystem: connection.system,
+        sapService: {
+          serviceName: body.serviceName || process.env.DEFAULT_PO_SERVICE_NAME || "",
+          entitySet: body.entitySet || process.env.DEFAULT_PO_ENTITYSET || "",
+        },
+        sapAuth: connection.sapAuth,
+        query: { pageSize: body.pageSize, cursor: body.cursor },
+      },
+      query: {
+        pageSize: body.pageSize,
+        cursor: body.cursor,
+      },
+    });
+
+    return {
+      ok: true,
+      message: "Purchase orders fetched successfully.",
+      ...result,
+    };
+  },
+
+  mapSuccessResult: (result) => ({
+    rows: result.rows,
+    data: result.data,
+    totalCount: result.totalCount,
+    pageSize: result.pageSize,
+    cursor: result.cursor,
+    nextPage: result.nextPage,
+    hasMore: result.hasMore,
   }),
 });
 

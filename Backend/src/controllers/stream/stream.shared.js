@@ -291,11 +291,21 @@ function formatFieldName(fieldName) {
 export function buildGenericTableReply({ title = "Results", rows = [], fields = [], startIndex = 1 }) {
   if (!Array.isArray(rows) || rows.length === 0) return "No results found.";
 
-  const first = rows[0] && typeof rows[0] === "object" ? rows[0] : {};
-  const keys = Object.keys(first).filter((k) => k !== "__metadata");
+  const keys = Array.from(
+    rows.slice(0, 10).reduce((set, row) => {
+      if (row && typeof row === "object") {
+        Object.keys(row).forEach((key) => {
+          if (key !== "__metadata") set.add(key);
+        });
+      }
+      return set;
+    }, new Set())
+  );
 
   const base = Array.isArray(fields) && fields.length > 0 ? fields.filter((f) => keys.includes(f)) : [];
-  const common = ["CrtDate", "UserCreated", "SuppAcoutNo", "NetPrice", "CurKey"].filter((k) => keys.includes(k));
+  const common = ["PoItem", "MatNo", "SuppAcoutNo", "Menge", "NetPrice", "CurKey", "CrtDate"].filter((k) =>
+    keys.includes(k)
+  );
   const baseOrCommon = base.length > 0 ? base : common.length > 0 ? common : keys.slice(0, 8);
 
   const mandatoryIds = [

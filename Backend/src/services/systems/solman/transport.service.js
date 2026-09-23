@@ -203,6 +203,123 @@ function extractTransportNumbersFromCrRows(rows = []) {
   return unique(transports);
 }
 
+function isEmptyDependencyMessage(value = "") {
+  return !cleanString(value);
+}
+
+function buildDependencyCheckRequestPath(transport = "") {
+  const cleanTransport = cleanString(transport);
+  const filter = `TRANSPORT eq '${escapeODataString(cleanTransport)}'`;
+  return {
+    entitySetName: "zmessageSet",
+    relativePath: `zmessageSet?$filter=${encodeURIComponent(filter)}&$expand=message_nav`,
+  };
+}
+
+function normalizeDependencyCheckResult(raw = {}, transport = "") {
+  const rootRows = asArray(raw);
+  const firstRow = rootRows[0] || {};
+  const evMessage = cleanString(firstRow?.EV_MESSAGE || firstRow?.EvMessage);
+  const dependencyRows = normalizeDependencyRows(raw);
+  const transportValue = cleanString(firstRow?.TRANSPORT || firstRow?.Transport || transport);
+
+  return {
+    transport: transportValue || cleanString(transport),
+    evMessage,
+    hasDependency: !isEmptyDependencyMessage(evMessage),
+    dependencies: dependencyRows.dependencies,
+    raw,
+  };
+}
+
+export async function getDependencyCheckForTransport({ system, sapAuth, transport, fetcher = fetchFromSap }) {
+  const cleanTransport = cleanString(transport);
+  if (!cleanTransport) {
+    return {
+      transport: cleanTransport,
+      evMessage: "",
+      hasDependency: false,
+      dependencies: [],
+      error: new Error("transport is required."),
+    };
+  }
+
+  const { entitySetName, relativePath } = buildDependencyCheckRequestPath(cleanTransport);
+  const serviceName = "ZTR_DEP_CHECK_SRV";
+
+  console.log("[SOLMAN][DEP-CHECK] Calling dependency API", {
+    transport: cleanTransport,
+    serviceName,
+    entitySet: entitySetName,
+  });
+  console.log("[SOLMAN][DEP-CHECK] Dependency API URL:", `/sap/opu/odata/sap/${serviceName}/${relativePath}`);
+
+  const raw = await fetcher(
+    {
+      system,
+      service: { serviceName },
+      relativePath,
+      requestMeta: {
+        feature: "solman",
+        serviceName,
+        transport: cleanTransport,
+      },
+    },
+    sapAuth
+  );
+
+  const normalized = normalizeDependencyCheckResult(raw, cleanTransport);
+
+  console.log("[SOLMAN][DEP-CHECK] Dependency API status:", 200);
+  console.log("[SOLMAN][DEP-CHECK] Dependency result:", {
+    transport: normalized.transport,
+    evMessage: normalized.evMessage || "",
+    hasDependency: normalized.hasDependency,
+  });
+
+  return normalized;
+}
+
+export async function buildDependencyChecksForTransports({
+  system,
+  sapAuth,
+  transports = [],
+  fetcher = getDependencyCheckForTransport,
+}) {
+  const uniqueTransports = unique(Array.isArray(transports) ? transports : []);
+  const dependencyChecks = [];
+
+  for (const transport of uniqueTransports) {
+    try {
+      const dependencyCheck = await fetcher({
+        system,
+        sapAuth,
+        transport,
+      });
+
+      dependencyChecks.push({
+        transport,
+        ...dependencyCheck,
+      });
+    } catch (error) {
+      console.log("[SOLMAN][DEP-CHECK] Dependency API failed for transport", {
+        transport,
+        message: cleanString(error?.message) || "<unknown>",
+      });
+
+      dependencyChecks.push({
+        transport,
+        evMessage: "",
+        hasDependency: false,
+        dependencies: [],
+        errorMessage: cleanString(error?.message) || "Unable to retrieve dependency information from SAP.",
+      });
+    }
+  }
+
+  return dependencyChecks;
+}
+
 function isSapServiceNotFoundError(error, serviceName) {
   const msg = cleanString(error?.message).toLowerCase();
   const targetService = cleanString(serviceName).toLowerCase();
@@ -720,30 +837,11 @@ export async function getDependentTransportsFromCr({
     };
   }
 
-  const transportRows = (Array.isArray(trResult?.result?.rows) ? trResult.result.rows : []).filter(Boolean);
-  const dependencyRows = transportRows.length > 0
-    ? transportRows.map((row) => ({
-        transportEntered: cleanString(row?.Trkorr) || cleanString(row?.Transport) || cleanString(row?.TRANSPORT) || cleanString(sourceTransports[0]) || cleanCr,
-        dependentTransport: cleanString(row?.Trkorr) || cleanString(row?.Transport) || cleanString(row?.TRANSPORT) || cleanString(sourceTransports[0]) || cleanCr,
-        description: cleanString(row?.Desc) || cleanString(row?.TrfuncDescription) || cleanString(row?.Message) || `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
-        status: cleanString(row?.Trfunction) || cleanString(row?.Status) || "",
-        owner: cleanString(row?.Owner) || cleanString(row?.TaskOwner) || "",
-        exportDate: cleanString(row?.DevReleasedDate) || cleanString(row?.DevCreatedDate) || "",
-        exportTime: cleanString(row?.DevReleasedTime) || cleanString(row?.DevCreatedTime) || "",
-        importDate: cleanString(row?.TaskExdate) || "",
-        importTime: cleanString(row?.TaskExtime) || "",
-      }))
-    : sourceTransports.map((transport) => ({
-        transportEntered: cleanString(transport) || cleanCr,
-        dependentTransport: cleanString(transport) || cleanCr,
-        description: `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
-        status: "",
-        owner: "",
-        exportDate: "",
-        exportTime: "",
-        importDate: "",
-        importTime: "",
-      }));
+  const dependencyChecks = await buildDependencyChecksForTransports({
+    system,
+    sapAuth,
+    transports: sourceTransports,
+  });
 
   return {
     ok: true,
@@ -752,11 +850,12 @@ export async function getDependentTransportsFromCr({
       changeRequestId: cleanCr,
       processType: trResult?.result?.processType || null,
       sourceTransports,
-      dependencyMessage: `Found ${sourceTransports.length} transport(s) for CR ${cleanCr}.`,
-      dependencies: dependencyRows,
+      dependencyMessage: dependencyChecks.find((item) => cleanString(item?.evMessage))?.evMessage || "",
+      dependencies: dependencyChecks.flatMap((item) => item?.dependencies || []),
+      dependencyChecks,
       raw: {
         transportLookup: trResult?.result?.raw || null,
-        dependencyLookup: null,
+        dependencyLookup: dependencyChecks,
       },
     },
   };

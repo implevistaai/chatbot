@@ -6,6 +6,7 @@ import {
   buildPendingInvoiceStatusSections,
   buildProcurementFlowReply,
   detectPendingInvoiceIntent,
+  buildPurchaseDocumentSummaryRows,
 } from "../src/controllers/stream/s4po.stream.controller.js";
 import { extractQuantityValue } from "../src/services/sap/sapValueExtractor.service.js";
 import { getProcurementCdsRegistry, planProcurementChatQuery } from "../src/services/procurement/purchaseOrderChatbot.service.js";
@@ -255,6 +256,20 @@ test("procurement flow formatter only renders sections allowed by intent", () =>
   assert.match(completeReply, /Invoice Details/);
   assert.match(completeReply, /Invoice Header/);
   assert.match(completeReply, /Accounting Details/);
+});
+
+test("purchase document summary rows expose all five PO summary values", () => {
+  const rows = buildPurchaseDocumentSummaryRows([
+    {
+      PoNo: "4600000003",
+      PoItem: "00010",
+      material: "TG10-001",
+      vendor: "1000001",
+      quantity: "70.000",
+    },
+  ]);
+
+  assert.deepEqual(rows, [["4600000003", "00010", "TG10-001", "1000001", "70.000"]]);
 });
 
 test("pending invoice formatter reports only pending status fields", () => {

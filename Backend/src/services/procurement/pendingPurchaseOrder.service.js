@@ -2,7 +2,7 @@ import { buildEntitySetQuery, normalizeNumericId } from "../odataQueryBuilder.js
 import { fetchFromSap } from "../sap.service.js";
 import { normalizeDateQuery } from "../filters/dateFilters.js";
 
-const DEFAULT_PAGE_SIZE = 30;
+const DEFAULT_PAGE_SIZE = 5;
 const MAX_PAGE_SIZE = 50;
 const FETCH_CHUNK_SIZE = 200;
 export const PENDING_PO_SERVICE_NAME = "ZIV_PO_DETAILS_CDS";

@@ -54,6 +54,37 @@ function cleanString(value) {
   return text || null;
 }
 
+function formatPriceWithCurrency(price, currency) {
+  const priceText = cleanString(price);
+  const currencyText = cleanString(currency);
+
+  if (priceText && currencyText) {
+    return `${priceText} ${currencyText}`;
+  }
+
+  return priceText || currencyText || "-";
+}
+
+function readPoSummaryValue(row = {}, fieldNames = []) {
+  for (const fieldName of Array.isArray(fieldNames) ? fieldNames : []) {
+    const value = cleanText(row?.[fieldName]);
+    if (value !== "-") return value;
+  }
+  return "-";
+}
+
+function buildPurchaseDocumentSummaryRows(poRows = [], poNo = "NULL", poItem = "NULL") {
+  const rows = Array.isArray(poRows) && poRows.length > 0 ? poRows : [{}];
+
+  return rows.map((row) => [
+    cleanText(row?.PoNo || poNo),
+    cleanText(row?.PoItem || poItem),
+    readPoSummaryValue(row, ["MatNo", "material", "material_no", "MaterialNumber", "Material"]),
+    readPoSummaryValue(row, ["SuppAcoutNo", "SuppAccountNo", "SupplierAccountNo", "supplierAccountNo", "Supplier", "vendor", "Vendor"]),
+    readPoSummaryValue(row, ["PoQuantity", "PO_Quantity", "Menge", "Quantity", "TotalPoQuantity"]),
+  ]);
+}
+
 function buildFallbackPoService(serviceIntent) {
   const keys = Array.isArray(serviceIntent?.keys)
     ? serviceIntent.keys.map((key) => String(key || "").trim()).filter(Boolean)
@@ -449,14 +480,16 @@ function buildProcurementFlowSections({
       return [
         {
           title: "Pricing Details",
-          columns: ["PO Number", "PO Item", "Net Price", "Net Value", "Quantity", "Currency"],
+          columns: ["PO Number", "PO Item", "Net Price", "Net Value", "Quantity"],
           rows: (Array.isArray(poRows) && poRows.length > 0 ? poRows : [primary]).map((row) => [
             cleanText(row?.PoNo || poNo),
             cleanText(row?.PoItem || poItem),
-            cleanText(row?.NetPrice || row?.net_price || row?.price || row?.NetAmount || row?.net_value),
+            formatPriceWithCurrency(
+              row?.NetPrice || row?.net_price || row?.price || row?.NetAmount || row?.net_value,
+              row?.CurKey || row?.Currency || row?.currency || row?.CurrencyKey
+            ),
             cleanText(row?.NetValue || row?.net_value || row?.net_amount || row?.TotalNetValue || row?.TotalAmount),
             cleanText(row?.PO_Quantity || row?.PoQuantity || row?.Menge || row?.Quantity),
-            cleanText(row?.CurKey || row?.Currency || row?.currency || row?.CurrencyKey),
           ]),
         },
       ];
@@ -468,13 +501,8 @@ function buildProcurementFlowSections({
   const sections = [
     {
       title: "Purchase Document Summary",
-      columns: ["PO Number", "PO Item", "Material Number", "Quantity"],
-      rows: (Array.isArray(poRows) && poRows.length > 0 ? poRows : [primary]).map((row) => [
-        cleanText(row?.PoNo || poNo),
-        cleanText(row?.PoItem || poItem),
-        cleanText(row?.MatNo || row?.MaterialNumber || row?.Material || row?.material_no),
-        cleanText(row?.PO_Quantity || row?.PoQuantity || row?.Menge || row?.Quantity || row?.TotalPoQuantity),
-      ]),
+      columns: ["PO Number", "PO Item", "Material Number", "Supplier", "Quantity"],
+      rows: buildPurchaseDocumentSummaryRows(poRows, poNo, poItem),
     },
   ];
 
@@ -755,6 +783,8 @@ export {
   buildPendingInvoiceStatusReply,
   buildPendingInvoiceStatusSections,
   buildProcurementFlowReply,
+  buildProcurementFlowSections,
+  buildPurchaseDocumentSummaryRows,
   detectPendingInvoiceIntent,
   getPendingInvoiceExecutionPlan,
 };
@@ -788,7 +818,7 @@ export function applyPoNextContinuationState({ query, extracted, previousMemory 
       extracted,
       error: {
         message:
-          "Please ask for a purchase order list first, then say 'show next 10 po' or 'show next 20 po'.",
+          "Please ask for a purchase order list first, then use the Load More button to see additional purchase orders.",
         status: "missing_po_context",
       },
     };
@@ -1249,6 +1279,18 @@ function resolveSelfUserFilter(filters, sapUser) {
   return { normalized, unresolvedSelfRef };
 }
 
+function isGenericPoListRequest(query, extracted) {
+  const q = String(query || "").toLowerCase();
+  if (String(extracted?.docNumber || "").trim() || String(extracted?.docItem || "").trim()) return false;
+  if (String(extracted?.listMode || "").trim().toLowerCase() !== "latest_po") return false;
+  return /^(show|list|get)\s+(all\s+)?(latest\s+|recent\s+|most\s+recent\s+)?(po|purchase\s*order[s]?)\b/.test(q);
+}
+
+function isExplicitPoFieldRequest(query) {
+  const q = String(query || "").toLowerCase();
+  return /\b(currency|volume|plant|price|net\s+price|amount|value|date|created|vendor|supplier|quantity|unit|material|storage|company\s+code)\b/.test(q);
+}
+
 export async function handleS4poChatStream({
   req,
   sse,
@@ -1444,6 +1486,14 @@ export async function handleS4poChatStream({
     extracted.fields = serviceIntent.fields.filter((f) => allowedFields.includes(f));
   }
 
+  const genericPoListRequest = isGenericPoListRequest(query, extracted);
+  const explicitPoFieldRequest = isExplicitPoFieldRequest(query);
+  if (genericPoListRequest && !explicitPoFieldRequest) {
+    extracted.fields = ["PoNo", "PoItem", "MatNo", "SuppAcoutNo", "Menge"].filter((field) =>
+      allowedFields.includes(field)
+    );
+  }
+
   if ((!extracted.orderBy || extracted.orderBy.length === 0) && Array.isArray(serviceIntent?.orderBy)) {
     extracted.orderBy = serviceIntent.orderBy;
   }
@@ -1475,7 +1525,7 @@ export async function handleS4poChatStream({
   const pendingPoIntentDetected = detectPendingPoIntent(query);
   if (pendingPoIntentDetected) {
     const pendingIntentPayload = buildPendingPoIntentPayload(query, {
-      pageSize: Number(req?.body?.limit) || 30,
+      pageSize: Number(req?.body?.limit) || 5,
     });
 
     const fallbackDateFrom = normalizeDateOnly(extracted?.fromDate);
@@ -2052,6 +2102,15 @@ export async function handleS4poChatStream({
     count: extracted.count === true,
   });
 
+  console.log("[S4PO DEBUG] resolvedServiceIntent.fields:", JSON.stringify(effectiveServiceIntent?.fields ?? [], null, 2));
+  console.log("[S4PO DEBUG] extracted:", JSON.stringify(extracted, null, 2));
+  console.log("[S4PO DEBUG] requested fields:", JSON.stringify(
+    extracted?.fields ?? extracted?.requestedFields ?? extracted?.requested_fields,
+    null,
+    2
+  ));
+  console.log("[S4PO DEBUG] final select fields:", extracted.fields);
+  console.log("[S4PO DEBUG] final relativePath:", relativePath);
   console.log("[S4PO] extracted.orderBy before SAP fetch:", JSON.stringify(extracted.orderBy));
   console.log("[SSE] SAP relativePath:", relativePath);
 
@@ -2118,6 +2177,7 @@ export async function handleS4poChatStream({
   sse.send("phase", { phase: "formatting", message: "Preparing results..." });
 
   const safeRows = toResultsArray(sapData);
+  console.log("[S4PO DEBUG] first normalized PO:", JSON.stringify(safeRows?.[0], null, 2));
   const sortedRows = isLatestQuery(query, extracted)
     ? sortRowsByLatestDate(safeRows, ["CrtDate"])
     : safeRows;

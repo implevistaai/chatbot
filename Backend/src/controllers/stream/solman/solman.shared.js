@@ -1207,7 +1207,7 @@ export function formatCrListReply(rows = [], params = {}) {
   };
 
   const tableHeader = [
-    padCell("Serial No", widths.no),
+    padCell("S.N", widths.no),
     padCell("CR Number", widths.cr),
     padCell("Status", widths.status),
     padCell("Created On", widths.createdOn),
@@ -1237,9 +1237,7 @@ export function formatCrListReply(rows = [], params = {}) {
 export function buildPaginationSuggestions(rows = []) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   return [
-    "Show next 10 records",
-    "Show next 20 records",
-    "Show next 30 records",
+    "Load more records",
   ];
 }
 

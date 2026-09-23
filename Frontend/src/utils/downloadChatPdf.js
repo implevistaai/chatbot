@@ -186,7 +186,7 @@ function buildTableColumns(rows = []) {
     "CREATED_ON" in firstRow;
 
   if (hasSolmanShape) {
-    return ["Serial No", "CR Number", "Status", "Created On", "Short Description"];
+    return ["S.N", "CR Number", "Status", "Created On", "Short Description"];
   }
 
   const hasPoShape =
@@ -199,7 +199,7 @@ function buildTableColumns(rows = []) {
 
   if (hasPoShape) {
     return [
-      "Serial No",
+      "S.N",
       "PoNo",
       "PoItem",
       "UserCreated",
@@ -210,7 +210,7 @@ function buildTableColumns(rows = []) {
   }
 
   return [
-    "Serial No",
+    "S.N",
     ...Object.keys(firstRow).filter((key) => {
     const normalized = String(key || "").trim().toLowerCase();
 
@@ -227,7 +227,7 @@ function buildTableColumns(rows = []) {
 function buildTableRows(rows = [], columns = []) {
   const isSolmanColumns =
     columns.length === 5 &&
-    columns[0] === "Serial No" &&
+    columns[0] === "S.N" &&
     columns[1] === "CR Number" &&
     columns[2] === "Status" &&
     columns[3] === "Created On" &&
@@ -245,7 +245,7 @@ function buildTableRows(rows = [], columns = []) {
 
   const isPoColumns =
     columns.length === 7 &&
-    columns[0] === "Serial No" &&
+    columns[0] === "S.N" &&
     columns[1] === "PoNo" &&
     columns[2] === "PoItem" &&
     columns[3] === "UserCreated" &&

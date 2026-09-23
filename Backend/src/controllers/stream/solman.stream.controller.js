@@ -459,15 +459,6 @@ export { handleSolmanChatStream } from "./solman/index.js";
 //   return `${header.join("\n")}\n\n${tableHeader}\n${body}`;
 // }
 
-// function buildPaginationSuggestions(rows = []) {
-//   if (!Array.isArray(rows) || rows.length === 0) return [];
-//   return [
-//     "Show next 10 records",
-//     "Show next 20 records",
-//     "Show next 30 records",
-//   ];
-// }
-
 // function buildCrSuggestions(query = "", scopeLabel = "", rows = []) {
 //   const q = cleanString(query).toLowerCase();
 //   const prefix = scopeLabel ? `${scopeLabel} ` : "";

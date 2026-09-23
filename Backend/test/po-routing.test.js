@@ -402,6 +402,13 @@ test("show next 20 po reuses previous PO list context and advances the page", ()
   assert.deepEqual(state.extracted.fields, previousMemory.extracted.fields);
 });
 
+test("pending PO intent payload defaults to five rows per page", async () => {
+  const { buildPendingPoIntentPayload } = await import("../src/services/procurement/pendingPurchaseOrder.service.js");
+  const payload = buildPendingPoIntentPayload("show po", { today: new Date("2026-06-10T00:00:00Z") });
+
+  assert.equal(payload.page_size, 5);
+});
+
 test("PO table reply respects pagination start index", () => {
   const reply = buildGenericTableReply({
     title: "Results",
@@ -445,7 +452,7 @@ test("chat message history includes assistant suggestions", async () => {
         text: "Results",
         summary: "",
         data: null,
-        suggestions: ["show next 10 po"],
+        suggestions: ["Load more"],
         createdAt: new Date("2026-06-11T10:00:00Z"),
       },
     ],
@@ -474,7 +481,7 @@ test("chat message history includes assistant suggestions", async () => {
     );
 
     assert.equal(chunks[0]?.ok, true);
-    assert.deepEqual(chunks[0]?.items?.[0]?.suggestions, ["show next 10 po"]);
+    assert.deepEqual(chunks[0]?.items?.[0]?.suggestions, ["Load more"]);
   } finally {
     ChatSession.findOne = originalFindOne;
     ChatMessage.find = originalFind;

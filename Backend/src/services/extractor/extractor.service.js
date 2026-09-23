@@ -101,6 +101,9 @@ const USERNAME_STOPWORDS = new Set([
   "order",
 ]);
 
+const PO_SUMMARY_FIELDS = ["PoNo", "PoItem", "MatNo", "SuppAcoutNo", "Menge"];
+const GENERIC_PO_LIST_FIELDS = ["PoNo", "PoItem", "MatNo", "SuppAcoutNo", "Menge"];
+
 export function hasPoQuerySignals(message) {
   const q = String(message || "").trim();
   if (!q) return false;
@@ -461,26 +464,20 @@ Return ONLY JSON with this exact shape:
   "listMode": null
 }
 
-Rules:
-- Keep business meaning unchanged.
-- Fix spelling mistakes while preserving IDs and usernames.
-- If the prompt is gibberish, set shouldReject=true.
-- Only use fields from the allowed list below.
-- If the user says "created by <user>", map it to a filter:
   {"field":"UserCreated","op":"eq","type":"string","value":"<user>"}
 - If the user says last/today/month/week/day ranges, map date filters onto the best date field.
 - If the user asks for latest/recent PO list, set listMode to "latest_po" and orderBy to CrtDate desc.
 - If no explicit limit is mentioned for list queries, default limit to 10.
 - confidence must be between 0 and 1.
 
+User:
+${JSON.stringify(message)}
+
 Allowed fields:
 ${JSON.stringify(allowedFields)}
 
 Field labels:
-${JSON.stringify(fieldLabels || {})}
-
-User message:
-${JSON.stringify(message)}
+${JSON.stringify(fieldLabels)}
 `.trim();
 }
 
@@ -582,9 +579,9 @@ function extractUserCreatedFilters(message, allowedFields) {
   }
 
   const directMatch =
-    text.match(/\bcreated\s*by\s*(?:the\s+)?(?:user(?:name)?|sap\s*user)?\s*[:=]?\s*["'`]?([A-Za-z0-9_@.\-]+)["'`]?/i) ||
-    text.match(/\bcreatedby\s*[:=]?\s*["'`]?([A-Za-z0-9_@.\-]+)["'`]?/i) ||
-    text.match(/\b(?:user(?:name)?|user\s*id|userid|sap\s*user)\s*[:=]?\s*["'`]?([A-Za-z0-9_@.\-]+)["'`]?/i);
+    text.match(new RegExp("\\bcreated\\s*by\\s*(?:the\\s+)?(?:user(?:name)?|sap\\s*user)?\\s*[:=]?\\s*[\"'\\x60]?([A-Za-z0-9_@.\\-]+)[\"'\\x60]?", "i")) ||
+    text.match(new RegExp("\\bcreatedby\\s*[:=]?\\s*[\"'\\x60]?([A-Za-z0-9_@.\\-]+)[\"'\\x60]?", "i")) ||
+    text.match(new RegExp("\\b(?:user(?:name)?|user\\s*id|userid|sap\\s*user)\\s*[:=]?\\s*[\"'\\x60]?([A-Za-z0-9_@.\\-]+)[\"'\\x60]?", "i"));
 
   let user = directMatch?.[1] ? String(directMatch[1]).trim() : "";
 
@@ -593,7 +590,7 @@ function extractUserCreatedFilters(message, allowedFields) {
       return [];
     }
 
-    const byRegex = /\b(?:by\s+(?:the\s+)?(?:user(?:name)?|sap\s*user)?\s*[:=]?\s*)?["'`]?([A-Za-z0-9_@.\-]+)["'`]?(?=\b|$)/gi;
+    const byRegex = new RegExp("\\b(?:by\\s+(?:the\\s+)?(?:user(?:name)?|sap\\s*user)?\\s*[:=]?\\s*)?[\"'\\x60]?([A-Za-z0-9_@.\\-]+)[\"'\\x60]?", "gi");
     const byMatches = [...text.matchAll(byRegex)];
     const hasCreationContext =
       /\b(created|creation|created\s+on|created\s+in|created\s+during)\b/i.test(text) ||
@@ -663,14 +660,15 @@ export async function extractDocQuery({ query, allowedFields, fieldLabels }) {
     );
 
     if (startDateFilter?.value && endDateFilter?.value) {
-      const parsedEnd = new Date(String(endDateFilter.value).endsWith("Z") ? String(endDateFilter.value) : `${endDateFilter.value}Z`);
+      const endDateValue = String(endDateFilter.value);
+      const parsedEnd = new Date(endDateValue.endsWith("Z") ? endDateValue : endDateValue + "Z");
       if (!Number.isNaN(parsedEnd.getTime())) {
         const inclusiveEnd = new Date(parsedEnd.getTime() - 1000);
         const yyyy = inclusiveEnd.getUTCFullYear();
         const mm = String(inclusiveEnd.getUTCMonth() + 1).padStart(2, "0");
         const dd = String(inclusiveEnd.getUTCDate()).padStart(2, "0");
         endDateFilter.op = "le";
-        endDateFilter.value = `${yyyy}-${mm}-${dd}T23:59:59`;
+        endDateFilter.value = yyyy + "-" + mm + "-" + dd + "T23:59:59";
       }
     }
   }
@@ -711,10 +709,14 @@ export async function extractDocQuery({ query, allowedFields, fieldLabels }) {
     if (out.limit == null && Number.isFinite(Number(intent.defaultLimit))) {
       out.limit = Number(intent.defaultLimit);
     }
+
+    if (out.fields.length === 0) {
+      const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
+      out.fields = PO_SUMMARY_FIELDS.filter((field) => allowedSet.has(String(field).toLowerCase()));
+    }
   }
 
   if (!intent && hasPoMention && !out.docNumber && !out.docItem) {
-    const poListDefaults = ["CrtDate", "UserCreated", "SuppAcoutNo", "NetPrice", "CurKey"];
     const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
     out.listMode = "latest_po";
     if (!Array.isArray(out.orderBy) || out.orderBy.length === 0) {
@@ -724,23 +726,33 @@ export async function extractDocQuery({ query, allowedFields, fieldLabels }) {
       out.limit = 10;
     }
     if (!Array.isArray(out.fields) || out.fields.length === 0) {
-      out.fields = poListDefaults.filter((f) => allowedSet.has(String(f).toLowerCase()));
+      out.fields = PO_SUMMARY_FIELDS.filter((f) => allowedSet.has(String(f).toLowerCase()));
     }
   }
 
   const combined = Array.from(new Set([...labelPicked, ...hintPicked, ...bundlePicked, ...autoBundlePicked]));
   const userPickedAny = combined.length > 0;
 
+  const ensureIdentifiers = (fields) => {
+    const outFields = Array.isArray(fields) ? [...fields] : [];
+    const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
+
+    for (const identifier of ["PoNo", "PoItem"]) {
+      if (
+        allowedSet.has(String(identifier).toLowerCase()) &&
+        !outFields.some((field) => String(field).toLowerCase() === String(identifier).toLowerCase())
+      ) {
+        outFields.unshift(identifier);
+      }
+    }
+
+    return Array.from(new Set(outFields));
+  };
+
   const isNextQuery = /\b(next|more|another|load)\b/i.test(qNorm);
   const hasExplicitFieldRequest = /\b(price|net\s*price|amount|value|currency|date|created|vendor|supplier|volume|weight|quantity|unit|material|plant|storage|company\s*code)\b/i.test(
     qNorm
   );
-
-  if (isNextQuery && intent && Array.isArray(intent.defaultFields) && !hasExplicitFieldRequest) {
-    const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
-    out.fields = intent.defaultFields.filter((f) => allowedSet.has(String(f).toLowerCase()));
-    return out;
-  }
 
   const isGenericPoListQuery =
     intent &&
@@ -748,27 +760,36 @@ export async function extractDocQuery({ query, allowedFields, fieldLabels }) {
     !out.docItem &&
     /^(show|list|get)\s+(all\s+)?(latest\s+|recent\s+|most\s+recent\s+)?(po|purchase\s*order[s]?)\b/.test(qNorm);
 
-  if (isGenericPoListQuery && Array.isArray(intent.defaultFields)) {
-    const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
-    out.fields = intent.defaultFields.filter((f) => allowedSet.has(String(f).toLowerCase()));
-    return out;
-  }
+  if (isNextQuery || isGenericPoListQuery || (intent && !out.docNumber && !userPickedAny)) {
+    const summaryFields = PO_SUMMARY_FIELDS.filter((field) =>
+      allowedFields.some((allowedField) => String(allowedField).toLowerCase() === String(field).toLowerCase())
+    );
+    const genericListFields = GENERIC_PO_LIST_FIELDS.filter((field) =>
+      allowedFields.some((allowedField) => String(allowedField).toLowerCase() === String(field).toLowerCase())
+    );
 
-  if (intent && !out.docNumber && !userPickedAny && Array.isArray(intent.defaultFields)) {
-    const allowedSet = new Set(allowedFields.map((f) => String(f).toLowerCase()));
-    out.fields = intent.defaultFields.filter((f) => allowedSet.has(String(f).toLowerCase()));
+    if (isGenericPoListQuery) {
+      out.fields = ensureIdentifiers(genericListFields.length > 0 ? genericListFields : GENERIC_PO_LIST_FIELDS);
+    } else {
+      out.fields = ensureIdentifiers(combined.length > 0 ? combined : summaryFields);
+    }
+
+    if (out.fields.length === 0) {
+      out.fields = ensureIdentifiers(GENERIC_PO_LIST_FIELDS);
+    }
+
     return out;
   }
 
   if (combined.length > 0) {
-    out.fields = combined;
+    out.fields = ensureIdentifiers(combined);
     return out;
   }
 
   if (out.docNumber && (!out.fields || out.fields.length === 0)) {
     const detailDefaults = extractFieldsByBundles("details", allowedFields);
     if (detailDefaults.length > 0) {
-      out.fields = detailDefaults;
+      out.fields = ensureIdentifiers(detailDefaults);
       return out;
     }
   }

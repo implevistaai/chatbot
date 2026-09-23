@@ -189,6 +189,31 @@ export async function getPurchaseOrderDetails({ systemId, sapUser, purchaseOrder
   return payload;
 }
 
+export async function listPurchaseOrders({ systemId, sapUser, pageSize = 5, cursor = null, serviceName = null, entitySet = null }) {
+  const res = await authFetch(`${apiBase}/chat/actions/s4hana/list-purchase-orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemId,
+      sapUser,
+      pageSize,
+      cursor,
+      serviceName,
+      entitySet,
+    }),
+  });
+
+  const payload = await readResponseBody(res);
+
+  if (!res.ok || payload?.ok === false || payload?.status === "validation_failed" || payload?.status === "execution_failed") {
+    throw new Error(payload?.error || payload?.message || "Failed to fetch purchase orders.");
+  }
+
+  return payload;
+}
+
 export async function getProcurementFlowDetailsByItem({
   systemId,
   sapUser,

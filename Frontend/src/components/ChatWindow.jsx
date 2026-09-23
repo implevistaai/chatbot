@@ -1019,11 +1019,6 @@ const isConnected = useMemo(() => {
                       disabled={!canInteract}
                       className="max-h-32 min-h-[40px] w-full resize-none border-0 bg-transparent text-sm leading-5 text-slate-900 outline-none placeholder:text-slate-400 disabled:text-slate-400"
                     />
-
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                      <span className="rounded-full bg-white px-2.5 py-1 shadow-sm ring-1 ring-slate-200">Enter to send</span>
-                      <span className="rounded-full bg-white px-2.5 py-1 shadow-sm ring-1 ring-slate-200">Shift+Enter for new line</span>
-                    </div>
                   </div>
 
                   {loading ? (

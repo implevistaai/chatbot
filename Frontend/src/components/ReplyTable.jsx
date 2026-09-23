@@ -61,15 +61,20 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
   }
 
   const safeColumns = Array.isArray(columns) ? columns : [];
+  const hasNetPrice = safeColumns.includes("NetPrice");
+  const hasCurrency = safeColumns.includes("CurKey");
+  const mergedPriceColumns = hasNetPrice && hasCurrency
+    ? safeColumns.filter((column) => column !== "CurKey")
+    : safeColumns;
   const visibleColumns =
-    safeColumns.includes("PoNo") &&
+    mergedPriceColumns.includes("PoNo") &&
     safeRows.length > 0 &&
-    safeRows.every((row) => isBlankLike(getColumnValue(row, "PoNo", safeColumns.indexOf("PoNo"))))
-      ? safeColumns.filter((column) => column !== "PoNo")
-      : safeColumns;
+    safeRows.every((row) => isBlankLike(getColumnValue(row, "PoNo", mergedPriceColumns.indexOf("PoNo"))))
+      ? mergedPriceColumns.filter((column) => column !== "PoNo")
+      : mergedPriceColumns;
 
   const labelMap = {
-    "#": "Serial No",
+    "#": "S.N",
     PoNo: "PO Number",
     PoItem: "PO Item",
     ItemDeliDt: "Delivery Date",
@@ -93,6 +98,19 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
 
 
   };
+
+  function getDisplayValue(row, column, colIdx) {
+    const value = getColumnValue(row, column, colIdx);
+
+    if (column === "NetPrice" && hasNetPrice && hasCurrency) {
+      const currencyValue = getColumnValue(row, "CurKey", safeColumns.indexOf("CurKey"));
+      const priceValue = String(value || "").trim();
+      const currencyText = String(currencyValue || "").trim();
+      return priceValue && currencyText ? `${priceValue} ${currencyText}` : priceValue || currencyText;
+    }
+
+    return value;
+  }
 
   useEffect(() => {
     const element = scrollAreaRef.current;
@@ -187,16 +205,22 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
 
         <div
           ref={scrollAreaRef}
-          className="w-full max-w-full overflow-x-auto scrollbar-none scroll-smooth"
+          className="w-full max-w-full overflow-hidden"
         >
-          <table className="w-max min-w-full text-left text-[11px] sm:text-xs border-collapse">
+          <table className="w-full table-auto text-left text-[11px] sm:text-xs border-collapse">
+            <colgroup>
+              <col className="w-12" />
+              {visibleColumns.slice(1).map((c) => (
+                <col key={c} />
+              ))}
+            </colgroup>
             {!isFallback && (
               <thead className="bg-slate-900 text-white font-semibold">
                 <tr>
                   {visibleColumns.map((c) => (
                     <th
                       key={c}
-                      className="px-3 py-3 border border-slate-800/80 whitespace-nowrap"
+                      className="px-3 py-3 border border-slate-800/80 whitespace-normal break-words"
                     >
                       {labelMap[c] || c}
                     </th>
@@ -210,7 +234,7 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
                 <tr key={idx} className="bg-white text-slate-700 border-t border-slate-200">
                   {!isFallback ? (
                     visibleColumns.map((c, colIdx) => {
-                      const cellValue = getColumnValue(row, c, colIdx);
+                      const cellValue = getDisplayValue(row, c, colIdx);
                       const rendered = typeof renderCell === "function" ? renderCell({
                         value: cellValue,
                         row,
@@ -222,7 +246,7 @@ export default function ReplyTable({ columns, rows, forceGrid = false, renderCel
                       return (
                         <td
                           key={`${c}-${colIdx}`}
-                          className="px-3 py-3 whitespace-nowrap border border-slate-200"
+                          className="px-3 py-3 whitespace-normal break-words border border-slate-200 align-top"
                         >
                           {rendered ?? String(cellValue ?? "")}
                         </td>

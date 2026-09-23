@@ -30,8 +30,47 @@ function pickDependencyCheckEntities(raw = {}, query = "") {
 }
 
 function formatDependencyCheckReply(result = {}) {
+  const dependencyChecks = Array.isArray(result?.dependencyChecks) ? result.dependencyChecks.filter(Boolean) : [];
   const dependencies = Array.isArray(result?.dependencies) ? result.dependencies.filter(Boolean) : [];
   const dependencyMessage = cleanString(result?.dependencyMessage || result?.message);
+
+  if (dependencyChecks.length > 0) {
+    const lines = ["Dependency Analysis", ""];
+
+    if (dependencyMessage) {
+      lines.push(`SAP Message: ${dependencyMessage}`);
+      lines.push("");
+    }
+
+    for (const item of dependencyChecks) {
+      const transport = cleanString(item?.transport) || "-";
+      lines.push(`Transport: ${transport}`);
+
+      const transportDetails = Array.isArray(item?.dependencies) ? item.dependencies.filter(Boolean) : [];
+
+      if (transportDetails.length > 0) {
+        lines.push("Transport Details");
+        lines.push(`- Original Transport: ${transport}`);
+        lines.push(`- Dependency Rows: ${transportDetails.length}`);
+      }
+
+      if (cleanString(item?.evMessage)) {
+        lines.push("Dependency Details");
+        lines.push(`- Transport: ${transport}`);
+        lines.push(`- Message: ${cleanString(item.evMessage)}`);
+      } else if (cleanString(item?.errorMessage)) {
+        lines.push("Dependency Details");
+        lines.push(`- Transport: ${transport}`);
+        lines.push(`- Message: ${cleanString(item.errorMessage)}`);
+      } else {
+        lines.push("No dependency message was returned.");
+      }
+
+      lines.push("");
+    }
+
+    return lines.join("\n").trim();
+  }
 
   if (dependencies.length === 0) {
     return [dependencyMessage ? dependencyMessage : "Dependency check completed.", "No dependent transports were found."]
@@ -286,6 +325,7 @@ export async function handleDependencyCheck(context) {
   const reply = formatDependencyCheckReply(result.result);
   const tableRows = buildDependencyTableRows(result.result);
   const dependencies = tableRows;
+  const dependencyChecks = Array.isArray(result?.result?.dependencyChecks) ? result.result.dependencyChecks : [];
 
   await persistAssistantAndTouchSession({
     owner,
@@ -300,6 +340,7 @@ export async function handleDependencyCheck(context) {
     },
     data: {
       dependencies,
+      dependencyChecks,
       dependencyMessage: result?.result?.dependencyMessage || "",
       tableRows,
       viewType: "dependency_check_table",
@@ -333,6 +374,7 @@ export async function handleDependencyCheck(context) {
     summary: result?.message || `Checked dependencies for CR ${objectId}.`,
     data: {
       dependencies,
+      dependencyChecks,
       dependencyMessage: result?.result?.dependencyMessage || "",
       tableRows,
       viewType: "dependency_check_table",

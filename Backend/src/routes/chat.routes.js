@@ -11,6 +11,7 @@ import {
   listSolmanTransports,
   checkSolmanTransportDependencies,
   getPurchaseOrderDetailsAction,
+  listPurchaseOrdersAction,
   getProcurementFlowDetailsByItemAction,
   getPendingPurchaseOrderItemsAction,
   getPendingPurchaseOrdersAction,
@@ -73,6 +74,11 @@ chatRoutes.post(
 chatRoutes.post(
   "/actions/s4hana/get-purchase-order-details",
   getPurchaseOrderDetailsAction
+);
+
+chatRoutes.post(
+  "/actions/s4hana/list-purchase-orders",
+  listPurchaseOrdersAction
 );
 
 chatRoutes.post(

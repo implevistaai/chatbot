@@ -830,31 +830,17 @@ function buildStructuredTable(data) {
 
   const rows =
     viewType === "transport_dependency_table" || viewType === "dependency_check_table"
-      ? rawRows.map((row) =>
-          Array.isArray(row)
-            ? [
-                row[0] ?? "-",
-                row[1] ?? "-",
-                row[2] ?? "-",
-                row[3] ?? "-",
-                row[4] ?? "-",
-                row[5] ?? "-",
-                row[6] ?? "-",
-                row[7] ?? "-",
-                row[8] ?? "-",
-              ]
-            : [
-                row.originalTransport ?? "-",
-                row.dependentTransport ?? "-",
-                row.description ?? "-",
-                row.status ?? "-",
-                row.owner ?? "-",
-                row.exportDate ?? "-",
-                row.exportTime ?? "-",
-                row.importDate ?? "-",
-                row.importTime ?? "-",
-              ]
-        )
+      ? rawRows.map((row) => [
+          row.originalTransport ?? "-",
+          row.dependentTransport ?? "-",
+          row.description ?? "-",
+          row.status ?? "-",
+          row.owner ?? "-",
+          row.exportDate ?? "-",
+          row.exportTime ?? "-",
+          row.importDate ?? "-",
+          row.importTime ?? "-",
+        ])
       : rawRows.map((row) => [
           row.no ?? "-",
           row.transport ?? "-",
@@ -1908,31 +1894,23 @@ export default function MessageBubble({
             : null,
         });
 
-        const dependencyRows = Array.isArray(transportResult?.result?.dependencies)
-          ? transportResult.result.dependencies
-          : Array.isArray(transportResult?.dependencies)
-            ? transportResult.dependencies
-            : [];
-        const sourceTransportRows = Array.isArray(transportResult?.result?.sourceTransports)
-          ? transportResult.result.sourceTransports
-          : Array.isArray(transportResult?.sourceTransports)
-            ? transportResult.sourceTransports
-            : [];
         const transportRows = Array.isArray(transportResult?.result?.raw?.transportLookup?.d?.results)
           ? transportResult.result.raw.transportLookup.d.results
-          : Array.isArray(transportResult?.result?.rows) && transportResult.result.rows.length > 0
+          : Array.isArray(transportResult?.result?.rows)
             ? transportResult.result.rows
-            : dependencyRows.length > 0
-              ? dependencyRows
-              : Array.isArray(transportResult?.result?.tableRows) && transportResult.result.tableRows.length > 0
+            : Array.isArray(transportResult?.result?.dependencies)
+              ? transportResult.result.dependencies
+              : Array.isArray(transportResult?.result?.tableRows)
                 ? transportResult.result.tableRows
-                : sourceTransportRows.length > 0
-                  ? sourceTransportRows.map((transport) => (typeof transport === "string" ? { Trkorr: transport } : transport))
-                  : Array.isArray(transportResult?.tableRows) && transportResult.tableRows.length > 0
-                    ? transportResult.tableRows
-                    : Array.isArray(transportResult?.rows) && transportResult.rows.length > 0
-                      ? transportResult.rows
-                      : [];
+                : Array.isArray(transportResult?.dependencies)
+                  ? transportResult.dependencies
+                  : Array.isArray(transportResult?.sourceTransports)
+                    ? transportResult.sourceTransports.map((transport) => ({ Trkorr: transport }))
+                    : Array.isArray(transportResult?.tableRows)
+                      ? transportResult.tableRows
+                      : Array.isArray(transportResult?.rows)
+                        ? transportResult.rows
+                        : [];
 
         const resolvedStatus = String(
           transportResult?.message ||
@@ -2278,6 +2256,9 @@ export default function MessageBubble({
   const hasTable = Boolean(table?.columns && table?.rows);
   const totalRows = Number(table?._meta?.totalRows || 0);
   const cappedTo = Number(table?._meta?.cappedTo || 0);
+  const isDependencyCheckView = data?.viewType === "dependency_check_table";
+  const dependencyChecks = Array.isArray(data?.dependencyChecks) ? data.dependencyChecks : [];
+  const dependencyMessage = String(data?.dependencyMessage || summaryText || text || "").trim();
 
   const isCapped =
     totalRows > 0 &&
@@ -2289,6 +2270,37 @@ export default function MessageBubble({
       <div className="flex items-start justify-end w-full">
         <div className="max-w-[85%] sm:max-w-[78%] break-words whitespace-pre-wrap rounded-[18px] rounded-tr-sm bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm leading-relaxed text-white shadow-[0_8px_24px_rgba(15,23,42,0.08)] border border-blue-500/30">
           {text}
+        </div>
+      </div>
+    );
+  }
+
+  if (isDependencyCheckView) {
+    const dependencyItems = dependencyChecks.length > 0
+      ? dependencyChecks
+      : [{ transport: data?.transport || data?.changeRequestId || "-", evMessage: dependencyMessage }];
+
+    return (
+      <div className="flex items-start justify-start gap-3 w-full">
+        <Avatar role={role} showAvatar={showAvatar} />
+
+        <div className="max-w-[95%] sm:max-w-full min-w-0 overflow-hidden space-y-2">
+          {dependencyItems.map((item, index) => {
+            const transport = String(item?.transport || "-").trim() || "-";
+            const message = String(item?.evMessage || item?.errorMessage || dependencyMessage || "").trim();
+
+            return (
+              <div
+                key={`${transport}-${index}`}
+                className="rounded-[18px] rounded-tl-sm border border-slate-200 bg-white px-4 py-4 shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
+              >
+                <div className="text-sm font-semibold text-slate-900">Transport: {transport}</div>
+                <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-900">
+                  {message || "No dependency message was returned."}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -2988,10 +3000,10 @@ export default function MessageBubble({
   }
 
   return (
-    <div className="flex items-start justify-start gap-3 w-full">
-      <Avatar role={role} showAvatar={showAvatar} />
+      <div className="flex items-start justify-start gap-3 w-full">
+        <Avatar role={role} showAvatar={showAvatar} />
 
-      <div className="max-w-[95%] sm:max-w-full min-w-0 overflow-hidden space-y-2">
+        <div className="max-w-[95%] sm:max-w-full min-w-0 overflow-hidden space-y-2">
         {summaryText && !suppressDuplicateSummary && (
           <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-900">
             {summaryText}

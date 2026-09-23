@@ -868,73 +868,25 @@ export default function Chat({ onToast = null } = {}) {
     if (window.innerWidth > 768) inputRef.current?.focus();
   }, [activeId]);
 
-  const prevActiveIdRef = useRef(null);
-  const pendingScrollToLatestQueryRef = useRef(false);
-
   useEffect(() => {
-    const el = bottomRef.current;
-    if (!el) return;
+    const scrollToBottom = () => {
+      const el = bottomRef.current;
+      if (!el) return;
 
-    const container = el.closest("section");
-    if (!container) return;
+      const container = el.closest("section");
+      if (!container) return;
 
-    const switchedConversation = prevActiveIdRef.current !== activeId;
-    prevActiveIdRef.current = activeId;
+      container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
+    };
 
-    if (switchedConversation) {
-      // Opening/switching a conversation: jump straight to its latest content.
-      pendingScrollToLatestQueryRef.current = false;
-      const scrollToBottom = () => container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
-      const t1 = setTimeout(scrollToBottom, 150);
-      const t2 = setTimeout(scrollToBottom, 400);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-      };
-    }
+    const t1 = setTimeout(scrollToBottom, 150);
+    const t2 = setTimeout(scrollToBottom, 400);
 
-    // Otherwise (assistant response streaming in, form toggles, etc.) leave the
-    // scroll position untouched so the response reveals as the user scrolls.
-  }, [activeId]);
-
-  useEffect(() => {
-    // Fires whenever the active conversation's message list is replaced with a
-    // new array — which happens both when a query is sent and, independently,
-    // whenever the server-sync (fetchLatestMessages) merges in fresh data. The
-    // pendingScrollToLatestQueryRef flag (set in onSend, right after the user's
-    // message is appended) is what tells the two apart, and it's consumed here
-    // so only the genuine "user just sent a query" case triggers the scroll —
-    // any later re-run for the same send is a no-op.
-    if (!pendingScrollToLatestQueryRef.current) return;
-
-    const el = bottomRef.current;
-    const container = el?.closest("section");
-    if (!container) return;
-
-    const messages = Array.isArray(activeConv?.messages) ? activeConv.messages : [];
-    let lastUserMessage = null;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i]?.role === "user") {
-        lastUserMessage = messages[i];
-        break;
-      }
-    }
-
-    if (!lastUserMessage?.id) return;
-
-    pendingScrollToLatestQueryRef.current = false;
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const target = document.getElementById(`chat-msg-${lastUserMessage.id}`);
-        if (!target) return;
-        const containerRect = container.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        const offset = targetRect.top - containerRect.top + container.scrollTop;
-        container.scrollTo({ top: Math.max(offset - 12, 0), behavior: "smooth" });
-      });
-    });
-  }, [activeConv?.messages]);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [activeConv?.messages?.length, loading, showSolmanCrForm]);
 
   useEffect(() => {
     setSidebarOpen(false);
@@ -1396,7 +1348,6 @@ export default function Chat({ onToast = null } = {}) {
       logMessages("messages before Prompt 2", beforeMessages);
 
       appendUserMessageOnce(currentConvId, uiText);
-      pendingScrollToLatestQueryRef.current = true;
 
       setConversations((prev) =>
         prev.map((c) => {
@@ -3192,4 +3143,4 @@ export default function Chat({ onToast = null } = {}) {
   );
 }
 
-//old logic hello world
+//old logic

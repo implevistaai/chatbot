@@ -144,13 +144,50 @@ test("supports this year and this month", () => {
 test("builds normalized pending PO intent payload", () => {
   const payload = buildPendingPoIntentPayload("Show all pending POs", {
     today: new Date("2026-08-18T00:00:00Z"),
-    pageSize: 30,
   });
 
   assert.equal(payload.intent, "GET_PENDING_PO_LIST");
   assert.equal(payload.date_from, "2024-08-18");
   assert.equal(payload.date_to, "2026-08-18");
-  assert.equal(payload.page_size, 30);
+  assert.equal(payload.page_size, 5);
+});
+
+test("pending PO list pages 5 rows at a time without duplicates", async () => {
+  const rows = buildDataset(12, { itemsPerPo: 2, pendingQty: 10 });
+  const fetchChunk = createFetchChunkStub(rows);
+
+  const page1 = await getPendingPurchaseOrderList({
+    system: {},
+    sapAuth: {},
+    service: { entitySet: "ZIV_PO_DETAILS" },
+    dateFrom: "2025-01-01",
+    dateTo: "2025-12-31",
+    pageSize: 5,
+    fetchChunk,
+  });
+
+  assert.equal(page1.rows.length, 5);
+  assert.equal(page1.hasMore, true);
+  assert.ok(page1.nextPage);
+
+  const page2 = await getPendingPurchaseOrderList({
+    system: {},
+    sapAuth: {},
+    service: { entitySet: "ZIV_PO_DETAILS" },
+    dateFrom: "2025-01-01",
+    dateTo: "2025-12-31",
+    pageSize: 5,
+    cursor: page1.nextPage,
+    fetchChunk,
+  });
+
+  assert.equal(page2.rows.length, 5);
+  assert.equal(page2.hasMore, true);
+  assert.ok(page2.nextPage);
+
+  const merged = [...page1.rows, ...page2.rows].map((row) => row.poNo);
+  assert.equal(new Set(merged).size, merged.length);
+  assert.deepEqual(merged, [...new Set(merged)]);
 });
 
 test("paginates 75 unique pending POs as 30, 30, 15", async () => {

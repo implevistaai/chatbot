@@ -34,8 +34,5 @@ export const INTENT_RULES = [
     listMode: "latest_po",
     defaultOrderBy: [{ field: "CrtDate", dir: "desc" }],
     defaultLimit: 10,
-
-    // fields shown for list
-    defaultFields: ["CrtDate", "UserCreated", "SuppAcoutNo", "NetPrice", "CurKey"],
   },
 ];
